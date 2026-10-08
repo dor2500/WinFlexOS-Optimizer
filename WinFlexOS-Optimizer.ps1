@@ -199,6 +199,13 @@ function Invoke-HardwareOptimizationAndRecommendations {
         Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
         $appliedTweaks.Add("Enabled Hardware-Accelerated GPU Scheduling (HAGS).")
 
+        # VBS / Memory Integrity (HVCI) Disable for Win11 Gaming
+        try {
+            New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -Name "Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            $appliedTweaks.Add("Disabled VBS & Memory Integrity (HVCI) for maximum gaming performance.")
+        } catch {}
+
         # Disable Mouse Acceleration
         Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
         Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
