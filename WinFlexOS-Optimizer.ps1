@@ -186,6 +186,19 @@ function Invoke-HardwareOptimizationAndRecommendations {
             netsh int tcp set global autotuninglevel=normal | Out-Null
             Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -match "Large Send Offload"} | Set-NetAdapterAdvancedProperty -RegistryValue "0" -ErrorAction SilentlyContinue
             $appliedTweaks.Add("Optimized TCP/IP and disabled LSO on network adapters (prevents ping spikes).")
+            
+            # Disable Nagle's Algorithm (TCPNoDelay & TcpAckFrequency)
+            $interfacesPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
+            $interfaces = Get-ChildItem -Path $interfacesPath -ErrorAction SilentlyContinue
+            foreach ($iface in $interfaces) {
+                $hasIP = Get-ItemProperty -Path $iface.PSPath -Name "IPAddress" -ErrorAction SilentlyContinue
+                $hasDHCP = Get-ItemProperty -Path $iface.PSPath -Name "DhcpIPAddress" -ErrorAction SilentlyContinue
+                if ($hasIP -or $hasDHCP) {
+                    Set-ItemProperty -Path $iface.PSPath -Name "TcpAckFrequency" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+                    Set-ItemProperty -Path $iface.PSPath -Name "TCPNoDelay" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+                }
+            }
+            $appliedTweaks.Add("Disabled Nagle's Algorithm to drastically reduce packet latency (Ping).")
         } catch {}
 
         # DPC Latency (HPET & Dynamic Tick)
