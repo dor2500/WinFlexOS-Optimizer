@@ -86,6 +86,24 @@ function Get-SystemHardwareAudit {
     }
 }
 
+# ==============================================================================
+# 2. User Profile Setup
+# ==============================================================================
+function Get-UserUseCase {
+    Write-Host "`n========================================================" -ForegroundColor Magenta
+    Write-Host "   Phase 2: Define Usage Profile (Customization)" -ForegroundColor Yellow
+    Write-Host "========================================================" -ForegroundColor Magenta
+    Write-Host "What is the primary use case for this PC? (Select a number):" -ForegroundColor Cyan
+    Write-Host " [1] 🎮 Gaming - Max performance, zero mouse accel, lower network latency."
+    Write-Host " [2] 🌐 Office & Browsing - Stability, power saving, bloatware removal."
+    Write-Host " [3] 🎬 Content Creation - Maximize stable resources for rendering/production."
+    
+    $choice = ""
+    while ($choice -notmatch "^[1-3]$") {
+        $choice = Read-Host "Enter profile number (1/2/3)"
+    }
+    $script:UserProfile = $choice
+}
 
 # ==============================================================================
 # 3. Deep Debloat (GitHub Community Standard)
@@ -142,25 +160,17 @@ function Invoke-DeepDebloat {
 }
 
 # ==============================================================================
-# 4. Autonomous AI Hardware Optimization
+# 4. Smart AI Hardware Optimization (Profile + Hardware Guided)
 # ==============================================================================
-function Invoke-AutonomousHardwareOptimization {
+function Invoke-SmartHardwareOptimization {
     Write-Host "`n========================================================" -ForegroundColor Magenta
-    Write-Host "   Phase 3: Autonomous AI Hardware Decision Engine" -ForegroundColor Yellow
+    Write-Host "   Phase 3: Smart Hardware Optimization & Profile Tweaks" -ForegroundColor Yellow
     Write-Host "========================================================" -ForegroundColor Magenta
     
     $appliedTweaks = [System.Collections.Generic.List[string]]::new()
     
-    # Analyze Hardware
-    $hasDiscreteGPU = $false
-    foreach ($gpu in $script:gpus) {
-        if ($gpu.Name -match "NVIDIA|AMD|Radeon|GeForce|RTX|RX") {
-            $hasDiscreteGPU = $true
-        }
-    }
-    
     Write-Host "[*] AI Analysis Results:" -ForegroundColor Cyan
-    Write-Host "    - Discrete GPU Detected: $hasDiscreteGPU" -ForegroundColor Gray
+    Write-Host "    - User Profile Selected: $(switch ($script:UserProfile) { '1' {'Gaming'} '2' {'Office'} '3' {'Content Creator'} })" -ForegroundColor Gray
     Write-Host "    - High RAM (>=16GB): $($script:totalRamGB -ge 16)" -ForegroundColor Gray
     Write-Host "    - SSD Detected: $($script:hasSSD)" -ForegroundColor Gray
     Write-Host "    - Form Factor: $(if ($script:IsLaptop) { 'Laptop' } else { 'Desktop' })" -ForegroundColor Gray
@@ -199,7 +209,7 @@ function Invoke-AutonomousHardwareOptimization {
     }
 
     # --- 3. Graphics & Gaming Optimizations ---
-    if ($hasDiscreteGPU) {
+    if ($script:UserProfile -eq "1") {
         Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
         Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
         
@@ -245,9 +255,13 @@ function Invoke-AutonomousHardwareOptimization {
             }
             $appliedTweaks.Add("Applied Gaming Network Tweaks (Nagle's Algorithm off, EEE off, LSO off).")
         } catch {}
-    } else {
+    } elseif ($script:UserProfile -eq "2") {
         Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
         $appliedTweaks.Add("Disabled Game Mode (Standard Office/Browsing usage detected).")
+    } elseif ($script:UserProfile -eq "3") {
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 20 -Type DWord -Force -ErrorAction SilentlyContinue
+        $appliedTweaks.Add("Disabled Game Mode and set System Responsiveness for Content Creation.")
     }
 
     # --- 4. Power Plan & Hardware Sleep ---
@@ -297,8 +311,9 @@ Write-Host "`n   [ Smart Hardware Optimization & Profile Customization ]   " -Fo
 Write-Host "   -------------------------------------------------------`n" -ForegroundColor DarkGray
 
 Get-SystemHardwareAudit
+Get-UserUseCase
 Invoke-DeepDebloat
-Invoke-AutonomousHardwareOptimization
+Invoke-SmartHardwareOptimization
 
 Write-Host "`n==========================================================" -ForegroundColor Green
 Write-Host "   Process completed successfully! A system restart is highly recommended." -ForegroundColor Green
