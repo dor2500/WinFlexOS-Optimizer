@@ -126,7 +126,16 @@ function Invoke-DeepDebloat {
     New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Force -ErrorAction SilentlyContinue | Out-Null
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
 
-    # 4. Remove UWP Bloatware
+    # 4. Disable Windows Copilot and Windows Recall (Privacy & RAM saving)
+    try {
+        New-Item -Path "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" -Name "TurnOffWindowsCopilot" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+        
+        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" -Name "DisableRecall" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+    } catch {}
+
+    # 5. Remove UWP Bloatware
     $bloatware = @(
         "Microsoft.BingNews", "Microsoft.MicrosoftSolitaireCollection", "Microsoft.NetworkSpeedTest",
         "Microsoft.SkypeApp", "Microsoft.WindowsFeedbackHub", "Microsoft.ZuneVideo", "Microsoft.ZuneMusic",
@@ -265,6 +274,7 @@ function Invoke-HardwareOptimizationAndRecommendations {
     
     # Global tweaks
     $appliedTweaks.Add("Disabled Windows Update Delivery Optimization (stops upload bandwidth drain).")
+    $appliedTweaks.Add("Disabled Windows Copilot & Recall AI features for maximum privacy and RAM savings.")
     $appliedTweaks.Add("Removed built-in Bloatware UWP apps (Skype, junk apps, etc.).")
     
     # --- Summary ---
