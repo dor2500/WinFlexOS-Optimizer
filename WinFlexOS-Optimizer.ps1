@@ -150,6 +150,13 @@ function Invoke-DeepDebloat {
         New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy" -Force -ErrorAction SilentlyContinue | Out-Null
         Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy" -Name "LetAppsRunInBackground" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
     } catch {}
+
+    # 7. Disable Telemetry Scheduled Tasks (Prevents random background CPU spikes)
+    try {
+        Get-ScheduledTask -TaskPath "\Microsoft\Windows\Application Experience\" -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue
+        Get-ScheduledTask -TaskPath "\Microsoft\Windows\Customer Experience Improvement Program\" -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue
+        Get-ScheduledTask -TaskPath "\Microsoft\Windows\Autochk\" -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue
+    } catch {}
 }
 
 # ==============================================================================
@@ -326,6 +333,7 @@ function Invoke-HardwareOptimizationAndRecommendations {
     # Global tweaks
     $appliedTweaks.Add("Disabled Windows Update Delivery Optimization (stops upload bandwidth drain).")
     $appliedTweaks.Add("Disabled Windows Copilot & Recall AI features for maximum privacy and RAM savings.")
+    $appliedTweaks.Add("Disabled hidden Telemetry Scheduled Tasks (prevents random CPU spikes).")
     $appliedTweaks.Add("Removed built-in Bloatware UWP apps (Skype, junk apps, etc.).")
     
     # --- Summary ---
