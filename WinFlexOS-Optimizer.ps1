@@ -243,7 +243,7 @@ function Invoke-HardwareOptimizationAndRecommendations {
         Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
         $appliedTweaks.Add("Disabled Mouse Acceleration (Enhance Pointer Precision) for raw 1:1 aiming.")
 
-        # Power Plan (Unpark cores)
+        # Power Plan (Unpark cores) & Hibernation
         if (-not $script:IsLaptop) {
             powercfg -attributes SUB_PROCESSOR 0cc5b647-c1df-4637-891a-dec35c318583 -ATTRIB_HIDE 2>$null | Out-Null
             $ultimateGuidOutput = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61
@@ -253,6 +253,12 @@ function Invoke-HardwareOptimizationAndRecommendations {
             } else {
                 powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
             }
+            
+            # Disable Hibernation / Fast Startup on gaming desktops
+            try {
+                powercfg -h off 2>$null | Out-Null
+                $appliedTweaks.Add("Disabled Hibernation and Fast Startup (freed up massive SSD space and ensures clean driver boots).")
+            } catch {}
         }
     }
     elseif ($script:UserProfile -eq "2") {
