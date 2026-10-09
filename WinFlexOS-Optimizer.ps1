@@ -144,6 +144,12 @@ function Invoke-DeepDebloat {
     foreach ($app in $bloatware) {
         Get-AppxPackage -Name "*$app*" -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
     }
+    
+    # 6. Disable all UWP Background Apps globally (Saves RAM and CPU cycles)
+    try {
+        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy" -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy" -Name "LetAppsRunInBackground" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+    } catch {}
 }
 
 # ==============================================================================
