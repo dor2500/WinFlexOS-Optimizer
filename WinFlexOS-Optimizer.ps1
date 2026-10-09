@@ -243,6 +243,13 @@ function Invoke-HardwareOptimizationAndRecommendations {
             $appliedTweaks.Add("Disabled VBS & Memory Integrity (HVCI) for maximum gaming performance.")
         } catch {}
 
+        # Disable CPU Mitigations (Spectre/Meltdown) for raw CPU throughput
+        try {
+            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "FeatureSettingsOverride" -Value 3 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "FeatureSettingsOverrideMask" -Value 3 -Type DWord -Force -ErrorAction SilentlyContinue
+            $appliedTweaks.Add("Disabled CPU Mitigations (Spectre/Meltdown) to maximize processor throughput.")
+        } catch {}
+
         # Disable Mouse Acceleration
         Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
         Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
