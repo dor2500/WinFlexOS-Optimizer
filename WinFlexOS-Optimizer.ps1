@@ -84,6 +84,11 @@ function Get-SystemHardwareAudit {
         if ($d.MediaType -eq "SSD" -or $d.BusType -eq "NVMe") { $script:hasSSD = $true }
         Write-Host "     - $($d.FriendlyName) : $([math]::Round($d.Size / 1GB, 1)) GB | Media: $($d.MediaType) $($d.BusType)" -ForegroundColor DarkGray
     }
+    
+    $script:isPotatoPC = ($script:totalRamGB -lt 8 -or $script:cpu.NumberOfCores -le 4 -or $script:cpu.Name -match "Pentium|Celeron|Atom|Athlon|Core 2")
+    if ($script:isPotatoPC) {
+        Write-Host "`n   [!] WARNING: Low-End/Legacy hardware detected. Extreme debloat recommended." -ForegroundColor Red
+    }
 }
 
 # ==============================================================================
@@ -97,10 +102,11 @@ function Get-UserUseCase {
     Write-Host " [1] 🎮 Gaming - Max performance, zero mouse accel, lower network latency."
     Write-Host " [2] 🌐 Office & Browsing - Stability, power saving, bloatware removal."
     Write-Host " [3] 🎬 Content Creation - Maximize stable resources for rendering/production."
+    Write-Host " [4] 🥔 Potato PC - Extreme debloat for very old/slow hardware (Pentium/Celeron)."
     
     $choice = ""
-    while ($choice -notmatch "^[1-3]$") {
-        $choice = Read-Host "Enter profile number (1/2/3)"
+    while ($choice -notmatch "^[1-4]$") {
+        $choice = Read-Host "Enter profile number (1/2/3/4)"
     }
     $script:UserProfile = $choice
 }
@@ -262,6 +268,28 @@ function Invoke-SmartHardwareOptimization {
         Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
         Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 20 -Type DWord -Force -ErrorAction SilentlyContinue
         $appliedTweaks.Add("Disabled Game Mode and set System Responsiveness for Content Creation.")
+    }
+    
+    # --- Extreme Debloat for Old Hardware (Potato PC) ---
+    if ($script:isPotatoPC -or $script:UserProfile -eq "4") {
+        Write-Host "`n[*] Applying EXTREME Debloat (Potato Mode)..." -ForegroundColor Yellow
+        
+        # Disable Print Spooler (if no printer is used)
+        Stop-Service -Name "Spooler" -Force -ErrorAction SilentlyContinue
+        Set-Service -Name "Spooler" -StartupType Disabled -ErrorAction SilentlyContinue
+        
+        # Disable Windows Search service (Massive HDD/CPU relief)
+        Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue
+        Set-Service -Name "WSearch" -StartupType Disabled -ErrorAction SilentlyContinue
+        
+        # Disable Visual Effects (Adjust for best performance)
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" -Name "VisualFXSetting" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+        
+        # Disable Background Intelligent Transfer Service (BITS)
+        Stop-Service -Name "BITS" -Force -ErrorAction SilentlyContinue
+        Set-Service -Name "BITS" -StartupType Manual -ErrorAction SilentlyContinue
+        
+        $appliedTweaks.Add("Applied EXTREME Potato PC Debloat: Disabled Print Spooler, WSearch, BITS, and Visual Effects.")
     }
 
     # --- 4. Power Plan & Hardware Sleep ---
