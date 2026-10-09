@@ -211,10 +211,14 @@ function Invoke-HardwareOptimizationAndRecommendations {
         
         # Advanced Network (TCP/IP & LSO)
         try {
+            # Disable Network Adapter Power Saving & EEE (Green Ethernet)
+            Disable-NetAdapterPowerManagement -Name "*" -ErrorAction SilentlyContinue | Out-Null
+            Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match "Energy Efficient|Green Ethernet" } | Set-NetAdapterAdvancedProperty -RegistryValue "0" -ErrorAction SilentlyContinue
+            
             netsh int tcp set global heuristics=disabled | Out-Null
             netsh int tcp set global autotuninglevel=normal | Out-Null
             Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -match "Large Send Offload"} | Set-NetAdapterAdvancedProperty -RegistryValue "0" -ErrorAction SilentlyContinue
-            $appliedTweaks.Add("Optimized TCP/IP and disabled LSO on network adapters (prevents ping spikes).")
+            $appliedTweaks.Add("Optimized TCP/IP, disabled LSO, and disabled Energy Efficient Ethernet (EEE) to prevent latency spikes.")
             
             # Disable Nagle's Algorithm (TCPNoDelay & TcpAckFrequency)
             $interfacesPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
