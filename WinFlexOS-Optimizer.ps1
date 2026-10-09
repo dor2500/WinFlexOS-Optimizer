@@ -181,7 +181,13 @@ function Invoke-HardwareOptimizationAndRecommendations {
         # GAMING
         Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
         Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-        $appliedTweaks.Add("Enabled Windows Game Mode and disabled Game DVR to reduce overhead.")
+        
+        # Globally Disable Fullscreen Optimizations (Forces true FSE for lower input lag)
+        Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_FSEBehaviorMode" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_HonorUserFSEBehaviorMode" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_FSEBehavior" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+        
+        $appliedTweaks.Add("Enabled Windows Game Mode and forced true Full-Screen Exclusive (FSE) to eliminate input lag.")
 
         if ($script:totalRamGB -ge 16) {
             Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 0xFFFFFFFF -Type DWord -Force -ErrorAction SilentlyContinue
