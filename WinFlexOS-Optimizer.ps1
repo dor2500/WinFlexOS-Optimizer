@@ -86,24 +86,6 @@ function Get-SystemHardwareAudit {
     }
 }
 
-# ==============================================================================
-# 2. User Profile Setup
-# ==============================================================================
-function Get-UserUseCase {
-    Write-Host "`n========================================================" -ForegroundColor Magenta
-    Write-Host "   Phase 2: Define Usage Profile (Customization)" -ForegroundColor Yellow
-    Write-Host "========================================================" -ForegroundColor Magenta
-    Write-Host "What is the primary use case for this PC? (Select a number):" -ForegroundColor Cyan
-    Write-Host " [1] 🎮 Gaming - Max performance, zero mouse accel, lower network latency."
-    Write-Host " [2] 🌐 Office & Browsing - Stability, power saving, bloatware removal."
-    Write-Host " [3] 🎬 Content Creation - Maximize stable resources for rendering/production."
-    
-    $choice = ""
-    while ($choice -notmatch "^[1-3]$") {
-        $choice = Read-Host "Enter profile number (1/2/3)"
-    }
-    $script:UserProfile = $choice
-}
 
 # ==============================================================================
 # 3. Deep Debloat (GitHub Community Standard)
@@ -160,182 +142,136 @@ function Invoke-DeepDebloat {
 }
 
 # ==============================================================================
-# 4. Profile-Based Hardware Optimization
+# 4. Autonomous AI Hardware Optimization
 # ==============================================================================
-function Invoke-HardwareOptimizationAndRecommendations {
-    $profileName = switch ($script:UserProfile) {
-        "1" { "Gaming" }
-        "2" { "Office" }
-        "3" { "Content Creation" }
-    }
-    
+function Invoke-AutonomousHardwareOptimization {
     Write-Host "`n========================================================" -ForegroundColor Magenta
-    Write-Host "   Phase 3: Applying Profile-Based Tweaks ($profileName)" -ForegroundColor Yellow
+    Write-Host "   Phase 3: Autonomous AI Hardware Decision Engine" -ForegroundColor Yellow
     Write-Host "========================================================" -ForegroundColor Magenta
     
     $appliedTweaks = [System.Collections.Generic.List[string]]::new()
-
-    # --- 1. System Restore Point ---
-    Write-Host "[*] Creating System Restore Point..." -ForegroundColor Cyan
+    
+    # Analyze Hardware
+    $hasDiscreteGPU = $false
+    foreach ($gpu in $script:gpus) {
+        if ($gpu.Name -match "NVIDIA|AMD|Radeon|GeForce|RTX|RX") {
+            $hasDiscreteGPU = $true
+        }
+    }
+    
+    Write-Host "[*] AI Analysis Results:" -ForegroundColor Cyan
+    Write-Host "    - Discrete GPU Detected: $hasDiscreteGPU" -ForegroundColor Gray
+    Write-Host "    - High RAM (>=16GB): $($script:totalRamGB -ge 16)" -ForegroundColor Gray
+    Write-Host "    - SSD Detected: $($script:hasSSD)" -ForegroundColor Gray
+    Write-Host "    - Form Factor: $(if ($script:IsLaptop) { 'Laptop' } else { 'Desktop' })" -ForegroundColor Gray
+    
+    Write-Host "`n[*] Creating System Restore Point..." -ForegroundColor Cyan
     try {
         Enable-ComputerRestore -Drive "C:\" -ErrorAction SilentlyContinue | Out-Null
         Checkpoint-Computer -Description "Before Auto-Hardware-Mod" -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop
     } catch {}
 
-    # --- 2. SSD Optimization ---
+    # --- 1. SSD Optimization ---
     if ($script:hasSSD) {
         fsutil behavior set DisableDeleteNotify 0 | Out-Null
         Optimize-Volume -DriveLetter C -ReTrim -ErrorAction SilentlyContinue | Out-Null
-        
-        # Disable SysMain (Superfetch) on SSDs to prevent high disk I/O spikes
         Stop-Service -Name "SysMain" -Force -ErrorAction SilentlyContinue
         Set-Service -Name "SysMain" -StartupType Disabled -ErrorAction SilentlyContinue
-        
-        $appliedTweaks.Add("Enabled TRIM for SSDs and disabled SysMain (Superfetch) to eliminate disk I/O spikes.")
+        $appliedTweaks.Add("Enabled TRIM and disabled SysMain (Superfetch) for SSD performance.")
     }
 
-    # --- 3. Profile-Specific Tweaks ---
-    if ($script:UserProfile -eq "1") {
-        # GAMING
-        Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    # --- 2. CPU & Memory Optimizations ---
+    if ($script:totalRamGB -ge 16) {
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 0xFFFFFFFF -Type DWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 10 -Type DWord -Force -ErrorAction SilentlyContinue
         
-        # Globally Disable Fullscreen Optimizations (Forces true FSE for lower input lag)
-        Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_FSEBehaviorMode" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_HonorUserFSEBehaviorMode" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_FSEBehavior" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
-        
-        $appliedTweaks.Add("Enabled Windows Game Mode and forced true Full-Screen Exclusive (FSE) to eliminate input lag.")
-
-        if ($script:totalRamGB -ge 16) {
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 0xFFFFFFFF -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 10 -Type DWord -Force -ErrorAction SilentlyContinue
-            
-            # MMCSS Games Task Priority Tweaks
+        if ($hasDiscreteGPU) {
             try {
                 New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" -Force -ErrorAction SilentlyContinue | Out-Null
                 Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" -Name "GPU Priority" -Value 8 -Type DWord -Force -ErrorAction SilentlyContinue
                 Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" -Name "Priority" -Value 6 -Type DWord -Force -ErrorAction SilentlyContinue
                 Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" -Name "Scheduling Category" -Value "High" -Type String -Force -ErrorAction SilentlyContinue
             } catch {}
-            
-            $appliedTweaks.Add("Removed Network Throttling and optimized MMCSS GPU Priority for gaming.")
         }
+        $appliedTweaks.Add("Configured MMCSS and System Responsiveness for High-End System (>=16GB RAM).")
+    } else {
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 20 -Type DWord -Force -ErrorAction SilentlyContinue
+    }
+
+    # --- 3. Graphics & Gaming Optimizations ---
+    if ($hasDiscreteGPU) {
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
         
-        # Advanced Network (TCP/IP & LSO)
-        try {
-            # Disable Network Adapter Power Saving & EEE (Green Ethernet)
-            Disable-NetAdapterPowerManagement -Name "*" -ErrorAction SilentlyContinue | Out-Null
-            Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match "Energy Efficient|Green Ethernet" } | Set-NetAdapterAdvancedProperty -RegistryValue "0" -ErrorAction SilentlyContinue
-            
-            netsh int tcp set global heuristics=disabled | Out-Null
-            netsh int tcp set global autotuninglevel=normal | Out-Null
-            Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -match "Large Send Offload"} | Set-NetAdapterAdvancedProperty -RegistryValue "0" -ErrorAction SilentlyContinue
-            $appliedTweaks.Add("Optimized TCP/IP, disabled LSO, and disabled Energy Efficient Ethernet (EEE) to prevent latency spikes.")
-            
-            # Disable Nagle's Algorithm (TCPNoDelay & TcpAckFrequency)
-            $interfacesPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
-            $interfaces = Get-ChildItem -Path $interfacesPath -ErrorAction SilentlyContinue
-            foreach ($iface in $interfaces) {
-                $hasIP = Get-ItemProperty -Path $iface.PSPath -Name "IPAddress" -ErrorAction SilentlyContinue
-                $hasDHCP = Get-ItemProperty -Path $iface.PSPath -Name "DhcpIPAddress" -ErrorAction SilentlyContinue
-                if ($hasIP -or $hasDHCP) {
-                    Set-ItemProperty -Path $iface.PSPath -Name "TcpAckFrequency" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-                    Set-ItemProperty -Path $iface.PSPath -Name "TCPNoDelay" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-                }
-            }
-            $appliedTweaks.Add("Disabled Nagle's Algorithm to drastically reduce packet latency (Ping).")
-        } catch {}
-
-        # DPC Latency (HPET & Dynamic Tick)
-        try {
-            bcdedit /deletevalue useplatformclock 2>$null | Out-Null
-            bcdedit /set disabledynamictick yes 2>$null | Out-Null
-            $appliedTweaks.Add("Disabled HPET and Dynamic Ticks to reduce micro-stutters (DPC Latency).")
-        } catch {}
-
-        # HAGS
+        Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_FSEBehaviorMode" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_HonorUserFSEBehaviorMode" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_FSEBehavior" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+        
         Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
-        $appliedTweaks.Add("Enabled Hardware-Accelerated GPU Scheduling (HAGS).")
-
-        # VBS / Memory Integrity (HVCI) Disable for Win11 Gaming
+        
         try {
             New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -Force -ErrorAction SilentlyContinue | Out-Null
             Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -Name "Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            $appliedTweaks.Add("Disabled VBS & Memory Integrity (HVCI) for maximum gaming performance.")
-        } catch {}
-
-        # Disable CPU Mitigations (Spectre/Meltdown) for raw CPU throughput
-        try {
             Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "FeatureSettingsOverride" -Value 3 -Type DWord -Force -ErrorAction SilentlyContinue
             Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "FeatureSettingsOverrideMask" -Value 3 -Type DWord -Force -ErrorAction SilentlyContinue
-            $appliedTweaks.Add("Disabled CPU Mitigations (Spectre/Meltdown) to maximize processor throughput.")
         } catch {}
 
-        # Disable Fault Tolerant Heap (FTH) to prevent FPS drops from memory shimming
         try {
             New-Item -Path "HKLM:\SOFTWARE\Microsoft\FTH" -Force -ErrorAction SilentlyContinue | Out-Null
             Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\FTH" -Name "Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
             Start-Process -FilePath "Rundll32.exe" -ArgumentList "fthsvc.dll,FthSysprepSpecialize" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
-            $appliedTweaks.Add("Disabled Fault Tolerant Heap (FTH) to stop Windows from throttling game memory.")
         } catch {}
 
-        # Disable Mouse Acceleration
         Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
         Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
         Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
-        $appliedTweaks.Add("Disabled Mouse Acceleration (Enhance Pointer Precision) for raw 1:1 aiming.")
 
-        # Power Plan (Unpark cores) & Hibernation
-        if (-not $script:IsLaptop) {
-            powercfg -attributes SUB_PROCESSOR 0cc5b647-c1df-4637-891a-dec35c318583 -ATTRIB_HIDE 2>$null | Out-Null
-            $ultimateGuidOutput = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61
-            if ($ultimateGuidOutput -match "([A-Fa-f0-9\-]{36})") {
-                powercfg -setactive $matches[1]
-                $appliedTweaks.Add("Enabled Ultimate Performance power plan and unparked CPU cores.")
-            } else {
-                powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+        $appliedTweaks.Add("Applied Extreme Gaming Profile (FSE, HAGS, Disabled VBS/Spectre, FTH, Mouse Accel).")
+        
+        try {
+            Disable-NetAdapterPowerManagement -Name "*" -ErrorAction SilentlyContinue | Out-Null
+            Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match "Energy Efficient|Green Ethernet" } | Set-NetAdapterAdvancedProperty -RegistryValue "0" -ErrorAction SilentlyContinue
+            netsh int tcp set global heuristics=disabled | Out-Null
+            netsh int tcp set global autotuninglevel=normal | Out-Null
+            Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -match "Large Send Offload"} | Set-NetAdapterAdvancedProperty -RegistryValue "0" -ErrorAction SilentlyContinue
+            
+            $interfacesPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
+            $interfaces = Get-ChildItem -Path $interfacesPath -ErrorAction SilentlyContinue
+            foreach ($iface in $interfaces) {
+                if ((Get-ItemProperty -Path $iface.PSPath -Name "IPAddress" -ErrorAction SilentlyContinue) -or (Get-ItemProperty -Path $iface.PSPath -Name "DhcpIPAddress" -ErrorAction SilentlyContinue)) {
+                    Set-ItemProperty -Path $iface.PSPath -Name "TcpAckFrequency" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+                    Set-ItemProperty -Path $iface.PSPath -Name "TCPNoDelay" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+                }
             }
-            
-            # Disable Hibernation / Fast Startup on gaming desktops
-            try {
-                powercfg -h off 2>$null | Out-Null
-                $appliedTweaks.Add("Disabled Hibernation and Fast Startup (freed up massive SSD space and ensures clean driver boots).")
-            } catch {}
-            
-            # Disable USB Selective Suspend for raw mouse input
-            try {
-                powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 2>$null
-                powercfg /setdcvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 2>$null
-                powercfg /setactive SCHEME_CURRENT 2>$null
-                $appliedTweaks.Add("Disabled USB Selective Suspend to eliminate input lag on high-polling gaming mice.")
-            } catch {}
-        }
-    }
-    elseif ($script:UserProfile -eq "2") {
-        # OFFICE
+            $appliedTweaks.Add("Applied Gaming Network Tweaks (Nagle's Algorithm off, EEE off, LSO off).")
+        } catch {}
+    } else {
         Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-        $appliedTweaks.Add("Disabled Game Mode.")
-        
-        if ($script:IsLaptop) {
-            powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e
-            $appliedTweaks.Add("Enabled 'Balanced' power plan for longer battery life.")
+        $appliedTweaks.Add("Disabled Game Mode (Standard Office/Browsing usage detected).")
+    }
+
+    # --- 4. Power Plan & Hardware Sleep ---
+    if (-not $script:IsLaptop) {
+        powercfg -attributes SUB_PROCESSOR 0cc5b647-c1df-4637-891a-dec35c318583 -ATTRIB_HIDE 2>$null | Out-Null
+        $ultimateGuidOutput = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61
+        if ($ultimateGuidOutput -match "([A-Fa-f0-9\-]{36})") {
+            powercfg -setactive $matches[1]
         } else {
-            powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e
-            $appliedTweaks.Add("Enabled 'Balanced' power plan for energy savings.")
-        }
-    }
-    elseif ($script:UserProfile -eq "3") {
-        # CONTENT CREATOR
-        Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-        
-        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 20 -Type DWord -Force -ErrorAction SilentlyContinue
-        $appliedTweaks.Add("Set System Responsiveness for stable video rendering (SystemResponsiveness=20).")
-        
-        if (-not $script:IsLaptop) {
             powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
-            $appliedTweaks.Add("Enabled High Performance power plan for faster exports.")
         }
+        
+        powercfg -h off 2>$null | Out-Null
+        
+        try {
+            powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 2>$null
+            powercfg /setdcvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 2>$null
+            powercfg /setactive SCHEME_CURRENT 2>$null
+        } catch {}
+
+        $appliedTweaks.Add("Desktop Mode: Ultimate Performance Plan, Disabled Hibernation, Disabled USB Selective Suspend.")
+    } else {
+        powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e
+        $appliedTweaks.Add("Laptop Mode: Applied Balanced Power Plan for battery efficiency.")
     }
     
     # Global tweaks
@@ -361,9 +297,8 @@ Write-Host "`n   [ Smart Hardware Optimization & Profile Customization ]   " -Fo
 Write-Host "   -------------------------------------------------------`n" -ForegroundColor DarkGray
 
 Get-SystemHardwareAudit
-Get-UserUseCase
 Invoke-DeepDebloat
-Invoke-HardwareOptimizationAndRecommendations
+Invoke-AutonomousHardwareOptimization
 
 Write-Host "`n==========================================================" -ForegroundColor Green
 Write-Host "   Process completed successfully! A system restart is highly recommended." -ForegroundColor Green
