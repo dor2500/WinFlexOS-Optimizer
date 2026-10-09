@@ -173,7 +173,12 @@ function Invoke-HardwareOptimizationAndRecommendations {
     if ($script:hasSSD) {
         fsutil behavior set DisableDeleteNotify 0 | Out-Null
         Optimize-Volume -DriveLetter C -ReTrim -ErrorAction SilentlyContinue | Out-Null
-        $appliedTweaks.Add("Enabled TRIM for SSDs and disabled Start Menu Bing web search.")
+        
+        # Disable SysMain (Superfetch) on SSDs to prevent high disk I/O spikes
+        Stop-Service -Name "SysMain" -Force -ErrorAction SilentlyContinue
+        Set-Service -Name "SysMain" -StartupType Disabled -ErrorAction SilentlyContinue
+        
+        $appliedTweaks.Add("Enabled TRIM for SSDs and disabled SysMain (Superfetch) to eliminate disk I/O spikes.")
     }
 
     # --- 3. Profile-Specific Tweaks ---
