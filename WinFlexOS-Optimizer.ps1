@@ -302,6 +302,14 @@ function Invoke-HardwareOptimizationAndRecommendations {
                 powercfg -h off 2>$null | Out-Null
                 $appliedTweaks.Add("Disabled Hibernation and Fast Startup (freed up massive SSD space and ensures clean driver boots).")
             } catch {}
+            
+            # Disable USB Selective Suspend for raw mouse input
+            try {
+                powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 2>$null
+                powercfg /setdcvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 2>$null
+                powercfg /setactive SCHEME_CURRENT 2>$null
+                $appliedTweaks.Add("Disabled USB Selective Suspend to eliminate input lag on high-polling gaming mice.")
+            } catch {}
         }
     }
     elseif ($script:UserProfile -eq "2") {
