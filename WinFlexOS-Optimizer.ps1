@@ -265,6 +265,14 @@ function Invoke-HardwareOptimizationAndRecommendations {
             $appliedTweaks.Add("Disabled CPU Mitigations (Spectre/Meltdown) to maximize processor throughput.")
         } catch {}
 
+        # Disable Fault Tolerant Heap (FTH) to prevent FPS drops from memory shimming
+        try {
+            New-Item -Path "HKLM:\SOFTWARE\Microsoft\FTH" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\FTH" -Name "Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            Start-Process -FilePath "Rundll32.exe" -ArgumentList "fthsvc.dll,FthSysprepSpecialize" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+            $appliedTweaks.Add("Disabled Fault Tolerant Heap (FTH) to stop Windows from throttling game memory.")
+        } catch {}
+
         # Disable Mouse Acceleration
         Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
         Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
