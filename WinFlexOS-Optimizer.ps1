@@ -15,7 +15,7 @@ if (-not $isAdmin) {
         if ($PSCommandPath) {
             Start-Process powershell.exe -ArgumentList ("-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"") -Verb RunAs -WindowStyle Normal
         } else {
-            $remoteCmd = "irm https://raw.githubusercontent.com/dor2500/WinFlexOS-Optimizer/master/HardwareAuditAndPrivacy.ps1 | iex"
+            $remoteCmd = "irm https://raw.githubusercontent.com/dor2500/WinFlexOS-Optimizer/master/WinFlexOS-Optimizer.ps1 | iex"
             Start-Process powershell.exe -ArgumentList ("-NoProfile -ExecutionPolicy Bypass -Command `"$remoteCmd`"") -Verb RunAs -WindowStyle Normal
         }
         exit
