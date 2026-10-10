@@ -15,20 +15,6 @@
         )
     },
     [pscustomobject]@{
-        TitleEn = "Hardware Audit & Privacy"
-        TitleHe = "בדיקת חומרה ופרטיות"
-        Key = "audit"
-        Icon = "$([char]0xE9D9)"
-        Items = @(
-            [pscustomobject]@{ Name = "Hardware Audit Report"; TweakId = "HardwareAudit"; IsTweak = $true }
-            [pscustomobject]@{ Name = "Create Restore Point"; TweakId = "RestorePoint"; IsTweak = $true }
-            [pscustomobject]@{ Name = "Privacy & Telemetry Lockdown"; TweakId = "PrivacyLock"; IsTweak = $true }
-            [pscustomobject]@{ Name = "Remove Bloatware Apps"; TweakId = "BloatRemoval"; IsTweak = $true }
-            [pscustomobject]@{ Name = "Network Latency Tuning"; TweakId = "NetworkTune"; IsTweak = $true }
-            [pscustomobject]@{ Name = "UNDO - Restore Defaults"; TweakId = "UndoAll"; IsTweak = $true }
-        )
-    },
-    [pscustomobject]@{
         TitleEn = "Browsers"
         TitleHe = "דפדפנים"
         Key = "browsers"
@@ -48,6 +34,20 @@
             [pscustomobject]@{ Name = "VLC Media Player"; WingetId = "VideoLAN.VLC" }
             [pscustomobject]@{ Name = "7-Zip"; WingetId = "7zip.7zip" }
             [pscustomobject]@{ Name = "Notepad++"; WingetId = "Notepad++.Notepad++" }
+        )
+    },
+    [pscustomobject]@{
+        TitleEn = "Hardware Audit & Privacy"
+        TitleHe = "בדיקת חומרה ופרטיות"
+        Key = "audit"
+        Icon = "$([char]0xE9D9)"
+        Items = @(
+            [pscustomobject]@{ Name = "Hardware Audit Report"; TweakId = "HardwareAudit"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Create Restore Point"; TweakId = "RestorePoint"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Privacy & Telemetry Lockdown"; TweakId = "PrivacyLock"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Remove Bloatware Apps"; TweakId = "BloatRemoval"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Network Latency Tuning"; TweakId = "NetworkTune"; IsTweak = $true }
+            [pscustomobject]@{ Name = "UNDO - Restore Defaults"; TweakId = "UndoAll"; IsTweak = $true }
         )
     }
 )

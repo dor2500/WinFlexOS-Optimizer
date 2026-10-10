@@ -107,7 +107,7 @@ function Get-SystemHardwareAudit {
     $auditText += "CPU: $($script:cpu.Name)`n"
     $auditText += "RAM: $($script:totalRamGB) GB`n"
     if ($script:gpus) {
-        $auditText += "GPU(s): " + ($script:gpus | ForEach-Object { $_.Name }) -join ", " + "`n"
+        $auditText += "GPU(s): " + (($script:gpus | ForEach-Object { $_.Name }) -join ", ") + "`n"
     }
     $auditText += "SSD Detected: $script:hasSSD"
     
@@ -639,9 +639,17 @@ $xaml = @"
                  <Border x:Name="SearchBoxBorder" Grid.Row="0" Background="{DynamicResource ThemeCard}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="10" Margin="0,0,0,16" Padding="12,8" Visibility="Collapsed">
                    <DockPanel><TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" Foreground="{DynamicResource ThemeSub}" VerticalAlignment="Center" Margin="5,0,12,0" FontSize="16"/>
                      <TextBox x:Name="TxtSearch" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource ThemeFg}" VerticalContentAlignment="Center" FontSize="15" CaretBrush="{DynamicResource ThemeAccent}"/></DockPanel></Border>
-                 <Border x:Name="InternetBanner" Grid.Row="1" Background="#14202B" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="{StaticResource Rm}" Padding="16" Margin="0,0,0,16" Visibility="Collapsed">
+                 <StackPanel Grid.Row="1">
+                  <Border x:Name="AuditCard" Background="{DynamicResource ThemeCard2}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="12" Padding="16" Margin="6,0,6,16" Visibility="Collapsed">
+                    <DockPanel>
+                      <Border DockPanel.Dock="Left" Width="44" Height="44" CornerRadius="10" Background="{DynamicResource ThemeAccent}" VerticalAlignment="Top" Margin="0,0,16,0">
+                        <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+                      <StackPanel>
+                        <TextBlock x:Name="AuditTitle" Text="System Overview" Foreground="{DynamicResource ThemeFg}" FontSize="15" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="AuditText" Text="" Foreground="{DynamicResource ThemeSub}" FontSize="12.5" LineHeight="20" Margin="0,6,0,0" TextWrapping="Wrap" FlowDirection="LeftToRight" TextAlignment="Left"/></StackPanel></DockPanel></Border>
+                  <Border x:Name="InternetBanner" Background="#14202B" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="{StaticResource Rm}" Padding="16" Margin="0,0,0,16" Visibility="Collapsed">
                    <DockPanel><ProgressBar IsIndeterminate="True" Width="140" Height="8" Margin="0,0,16,0" DockPanel.Dock="Left"/>
-                     <TextBlock x:Name="InternetText" Text="Waiting..." Foreground="{DynamicResource ThemeFg}" VerticalAlignment="Center" FontSize="14"/></DockPanel></Border>
+                     <TextBlock x:Name="InternetText" Text="Waiting..." Foreground="{DynamicResource ThemeFg}" VerticalAlignment="Center" FontSize="14"/></DockPanel></Border></StackPanel>
                  <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
                    <ItemsControl x:Name="ItemsList">
                      <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel Orientation="Horizontal" ItemWidth="280" ItemHeight="90"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
@@ -774,7 +782,7 @@ function Find([string]$name) { $window.FindName($name) }
 $BgImage=Find "BgImage"; $TopTitle=Find "TopTitle"; $TopSub=Find "TopSub"
 $PageTitle=Find "PageTitle"; $PageDesc=Find "PageDesc"; $ItemsList=Find "ItemsList"
 $InstallProgress=Find "InstallProgress"; $StatusText=Find "StatusText"
-$InternetBanner=Find "InternetBanner"; $InternetText=Find "InternetText"
+$InternetBanner=Find "InternetBanner"; $InternetText=Find "InternetText"; $AuditCard=Find "AuditCard"; $AuditTitle=Find "AuditTitle"; $AuditText=Find "AuditText"
 $BtnBack=Find "BtnBack"; $BtnNext=Find "BtnNext"
 $BtnLang=Find "BtnLang"; $BtnMute=Find "BtnMute"; $BtnMin=Find "BtnMin"
 $BtnMax=Find "BtnMax"; $BtnClose=Find "BtnClose"; $SideMenu=Find "SideMenu"
@@ -896,12 +904,21 @@ function Render-SideMenu {
         else{$b.Foreground=$window.Resources["ThemeSub"];$b.Background=[System.Windows.Media.Brushes]::Transparent}
     }
 }
+function Show-AuditCard {
+    if (-not $script:AuditSummary) {
+        try { $script:AuditSummary = (Get-SystemHardwareAudit) } catch { $script:AuditSummary = "Hardware info unavailable." }
+    }
+    $AuditTitle.Text = (L "סקירת מערכת" "System Overview")
+    $AuditText.Text = $script:AuditSummary
+    $AuditCard.Visibility = 'Visible'
+}
 function Show-Category {
     $script:IsInstallPhase=$false; $cat=$script:Categories[$script:CurrentCategoryIndex]
     $PageTitle.Text=(L $cat.TitleHe $cat.TitleEn)
     $PageDesc.Text=(L (-join([char]0x05D1,[char]0x05D7,[char]0x05E8,[char]0x0020,[char]0x05DE,[char]0x05D4,[char]0x0020,[char]0x05DC,[char]0x05D4,[char]0x05EA,[char]0x05E7,[char]0x05D9,[char]0x05DF,[char]0x002E)) "Select what to install.")
     $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]
     if($cat.Key -eq "custom"){$SearchBoxBorder.Visibility='Visible'}else{$SearchBoxBorder.Visibility='Collapsed'}
+    if($cat.Key -eq "audit"){Show-AuditCard}else{$AuditCard.Visibility='Collapsed'}
     $BrowsePanel.Visibility='Visible'; $InstallPanel.Visibility='Collapsed'
     $InstallProgress.Value=0; $StatusText.Text=(L (-join([char]0x05DE,[char]0x05D5,[char]0x05DB,[char]0x05DF,[char]0x002E)) "Ready.")
     $BtnBack.IsEnabled=$true; $BtnNext.IsEnabled=$true; Render-SideMenu
