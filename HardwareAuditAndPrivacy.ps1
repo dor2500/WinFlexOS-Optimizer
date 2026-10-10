@@ -7,11 +7,12 @@ Version: 5.0 (English Version - Advanced Hardware Audit, Profiles, and GitHub Mo
 # ==============================================================================
 # 0. Administrator Privileges Check
 # ==============================================================================
+Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
+
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    Write-Host "[!] Script requires Administrator privileges. Restarting elevated..." -ForegroundColor Yellow
     try {
-        Start-Process powershell.exe -ArgumentList ("-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"") -Verb RunAs
+        Start-Process powershell.exe -ArgumentList ("-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"") -Verb RunAs -WindowStyle Normal
         exit
     } catch {
         Write-Host "[X] Could not elevate privileges. Please run PowerShell as Administrator manually." -ForegroundColor Red
