@@ -416,6 +416,12 @@ function Invoke-SystemTweak($tweakId) {
         "BloatRemoval"  { Invoke-BloatRemoval }
         "NetworkTune"   { Invoke-NetworkLatencyTune }
         "UndoAll"       { Invoke-UndoTweaks }
+        "AuditProfile1" { Invoke-ExtremeDebloat; Invoke-RestorePointSafe; Invoke-SystemTweak "SSDOptimize"; Invoke-SystemTweak "ProfileGaming" }
+        "AuditProfile2" { Invoke-ExtremeDebloat; Invoke-RestorePointSafe; Invoke-SystemTweak "SSDOptimize"; Invoke-SystemTweak "ProfileOffice" }
+        "AuditProfile3" { Invoke-ExtremeDebloat; Invoke-RestorePointSafe; Invoke-SystemTweak "SSDOptimize"; Invoke-SystemTweak "ProfileCreator" }
+        "AuditProfile4" { Invoke-ExtremeDebloat; Invoke-RestorePointSafe; Invoke-SystemTweak "SSDOptimize"; Invoke-SystemTweak "ProfileAI" }
+        "AuditProfile5" { Invoke-ForensicDeepScan }
+        "AuditProfile6" { Invoke-UndoTweaks }
         "ForensicScan" {
             Invoke-ForensicDeepScan
         }
@@ -640,13 +646,7 @@ $xaml = @"
                    <DockPanel><TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" Foreground="{DynamicResource ThemeSub}" VerticalAlignment="Center" Margin="5,0,12,0" FontSize="16"/>
                      <TextBox x:Name="TxtSearch" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource ThemeFg}" VerticalContentAlignment="Center" FontSize="15" CaretBrush="{DynamicResource ThemeAccent}"/></DockPanel></Border>
                  <StackPanel Grid.Row="1">
-                  <Border x:Name="AuditCard" Background="{DynamicResource ThemeCard2}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="12" Padding="16" Margin="6,0,6,16" Visibility="Collapsed">
-                    <DockPanel>
-                      <Border DockPanel.Dock="Left" Width="44" Height="44" CornerRadius="10" Background="{DynamicResource ThemeAccent}" VerticalAlignment="Top" Margin="0,0,16,0">
-                        <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
-                      <StackPanel>
-                        <TextBlock x:Name="AuditTitle" Text="System Overview" Foreground="{DynamicResource ThemeFg}" FontSize="15" FontWeight="SemiBold"/>
-                        <TextBlock x:Name="AuditText" Text="" Foreground="{DynamicResource ThemeSub}" FontSize="12.5" LineHeight="20" Margin="0,6,0,0" TextWrapping="Wrap" FlowDirection="LeftToRight" TextAlignment="Left"/></StackPanel></DockPanel></Border>
+                  
                   <Border x:Name="InternetBanner" Background="#14202B" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="{StaticResource Rm}" Padding="16" Margin="0,0,0,16" Visibility="Collapsed">
                    <DockPanel><ProgressBar IsIndeterminate="True" Width="140" Height="8" Margin="0,0,16,0" DockPanel.Dock="Left"/>
                      <TextBlock x:Name="InternetText" Text="Waiting..." Foreground="{DynamicResource ThemeFg}" VerticalAlignment="Center" FontSize="14"/></DockPanel></Border></StackPanel>
@@ -669,6 +669,7 @@ $xaml = @"
                                  <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="CardBorder" Property="Background" Value="{DynamicResource ThemeCard}"/></Trigger>
                                </ControlTemplate.Triggers></ControlTemplate></CheckBox.Template></CheckBox>
                        </DataTemplate></ItemsControl.ItemTemplate></ItemsControl></ScrollViewer>
+                  <ScrollViewer x:Name="AuditPage" Grid.Row="2" VerticalScrollBarVisibility="Auto" Visibility="Collapsed"><StackPanel x:Name="AuditStack" FlowDirection="LeftToRight" Margin="6,0,12,0"/></ScrollViewer>
                  <Border Grid.Row="3" Background="#111318" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="{StaticResource Rm}" Padding="16,12" Margin="0,16,0,0">
                    <Grid>
                      <Grid.ColumnDefinitions>
@@ -782,7 +783,7 @@ function Find([string]$name) { $window.FindName($name) }
 $BgImage=Find "BgImage"; $TopTitle=Find "TopTitle"; $TopSub=Find "TopSub"
 $PageTitle=Find "PageTitle"; $PageDesc=Find "PageDesc"; $ItemsList=Find "ItemsList"
 $InstallProgress=Find "InstallProgress"; $StatusText=Find "StatusText"
-$InternetBanner=Find "InternetBanner"; $InternetText=Find "InternetText"; $AuditCard=Find "AuditCard"; $AuditTitle=Find "AuditTitle"; $AuditText=Find "AuditText"
+$InternetBanner=Find "InternetBanner"; $InternetText=Find "InternetText"; $AuditPage=Find "AuditPage"; $AuditStack=Find "AuditStack"
 $BtnBack=Find "BtnBack"; $BtnNext=Find "BtnNext"
 $BtnLang=Find "BtnLang"; $BtnMute=Find "BtnMute"; $BtnMin=Find "BtnMin"
 $BtnMax=Find "BtnMax"; $BtnClose=Find "BtnClose"; $SideMenu=Find "SideMenu"
@@ -904,13 +905,155 @@ function Render-SideMenu {
         else{$b.Foreground=$window.Resources["ThemeSub"];$b.Background=[System.Windows.Media.Brushes]::Transparent}
     }
 }
-function Show-AuditCard {
-    if (-not $script:AuditSummary) {
-        try { $script:AuditSummary = (Get-SystemHardwareAudit) } catch { $script:AuditSummary = "Hardware info unavailable." }
+# ===== Audit page (console-style layout of HardwareAuditAndPrivacy.ps1, in the app theme) =====
+$script:AuditBuilt = $false; $script:AuditRows = @()
+function Get-GpuVramText($gpu) {
+    try {
+        $base = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+        foreach ($k in (Get-ChildItem $base -ErrorAction SilentlyContinue)) {
+            $p = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
+            if ($p.DriverDesc -eq $gpu.Name -and $p.'HardwareInformation.qwMemorySize') { return "$([math]::Round([double]$p.'HardwareInformation.qwMemorySize' / 1GB, 1)) GB VRAM" }
+        }
+    } catch {}
+    if ($gpu.AdapterRAM -gt 0) { return "$([math]::Round($gpu.AdapterRAM / 1GB, 1)) GB VRAM" }
+    return "Shared RAM"
+}
+function Add-AuditText([string]$text, $brush, [double]$size = 13, [bool]$bold = $false, [double]$top = 0, [double]$left = 0) {
+    $tb = New-Object System.Windows.Controls.TextBlock
+    $tb.Text = $text; $tb.Foreground = $brush; $tb.FontSize = $size; $tb.TextWrapping = 'Wrap'
+    $tb.FontFamily = New-Object System.Windows.Media.FontFamily("Consolas")
+    if ($bold) { $tb.FontWeight = [System.Windows.FontWeights]::SemiBold }
+    $tb.Margin = New-Object System.Windows.Thickness($left, $top, 0, 0)
+    $AuditStack.Children.Add($tb) | Out-Null
+}
+function Add-AuditHeader([string]$text) {
+    $b = New-Object System.Windows.Controls.Border
+    $b.BorderBrush = $window.Resources["ThemeAccent"]; $b.BorderThickness = New-Object System.Windows.Thickness(0, 0, 0, 1)
+    $b.Padding = New-Object System.Windows.Thickness(0, 0, 0, 6); $b.Margin = New-Object System.Windows.Thickness(0, 16, 0, 8)
+    $tb = New-Object System.Windows.Controls.TextBlock
+    $tb.Text = $text; $tb.FontSize = 16; $tb.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $tb.Foreground = $window.Resources["ThemeFg"]; $tb.FontFamily = New-Object System.Windows.Media.FontFamily("Consolas")
+    $b.Child = $tb
+    $AuditStack.Children.Add($b) | Out-Null
+}
+function Update-AuditSelection {
+    $vms = $script:CategoryVms[$script:AuditCatIndex]
+    for ($i = 0; $i -lt $script:AuditRows.Count; $i++) {
+        $row = $script:AuditRows[$i]; $on = [bool]$vms[$i].Selected
+        if ($on) {
+            $row.Border.BorderBrush = $window.Resources["ThemeAccent"]
+            $row.Border.Background = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#11B122E5"))
+            $row.Dot.Fill = $window.Resources["ThemeAccent"]
+        } else {
+            $row.Border.BorderBrush = $window.Resources["ThemeBorder"]
+            $row.Border.Background = $window.Resources["ThemeCard2"]
+            $row.Dot.Fill = [System.Windows.Media.Brushes]::Transparent
+        }
     }
-    $AuditTitle.Text = (L "סקירת מערכת" "System Overview")
-    $AuditText.Text = $script:AuditSummary
-    $AuditCard.Visibility = 'Visible'
+}
+function Build-AuditPage {
+    $fg = $window.Resources["ThemeFg"]; $sub = $window.Resources["ThemeSub"]; $acc = $window.Resources["ThemeAccent"]
+    $AuditStack.Children.Clear()
+    if ($null -eq $script:hasSSD) { Get-SystemHardwareAudit | Out-Null }
+
+    # ---- Phase 1 ----
+    Add-AuditHeader "Phase 1: Comprehensive System & Hardware Audit"
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+    $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+    $bb = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
+    $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue | Select-Object -First 1
+    $osName = if ($os.BuildNumber -ge 22000) { "Windows 11" } else { "Windows 10" }
+    $ff = if ($script:IsLaptop) { "Laptop" } else { "Desktop" }
+    Add-AuditText "[+] Detected System Configuration: $ff" $acc 14 $true
+    Add-AuditText "* Operating System: $osName (Build $($os.BuildNumber))" $fg 13 $false 4 14
+    Add-AuditText "* Manufacturer & Model: $($cs.Manufacturer) - $($cs.Model)" $fg 13 $false 2 14
+    Add-AuditText "* Motherboard: $($bb.Manufacturer) $($bb.Product) (BIOS: $($bios.SMBIOSBIOSVersion))" $fg 13 $false 2 14
+
+    $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+    Add-AuditText "* CPU: $($cpu.Name)" $acc 13 $true 12 14
+    Add-AuditText "- $($cpu.NumberOfCores) Cores / $($cpu.NumberOfLogicalProcessors) Threads | Base Clock: $($cpu.MaxClockSpeed) MHz" $sub 12.5 $false 2 30
+
+    $sticks = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
+    Add-AuditText "* RAM: $($script:totalRamGB) GB Installed" $acc 13 $true 12 14
+    $n = 1
+    foreach ($s in $sticks) {
+        Add-AuditText "- Stick $($n): $([math]::Round($s.Capacity / 1GB, 1)) GB | Speed: $($s.ConfiguredClockSpeed) MHz (Maker: $($s.Manufacturer))" $sub 12.5 $false 2 30
+        $n++
+    }
+
+    Add-AuditText "* GPU(s):" $acc 13 $true 12 14
+    foreach ($g in @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)) {
+        Add-AuditText "- $($g.Name) [$(Get-GpuVramText $g)] (Driver: $($g.DriverVersion))" $sub 12.5 $false 2 30
+    }
+
+    Add-AuditText "* Storage:" $acc 13 $true 12 14
+    $pds = @(Get-PhysicalDisk -ErrorAction SilentlyContinue)
+    foreach ($d in $pds) {
+        Add-AuditText "- $($d.FriendlyName) : $([math]::Round($d.Size / 1GB, 1)) GB | Media: $($d.MediaType) $($d.BusType)" $sub 12.5 $false 2 30
+    }
+
+    Add-AuditText "* Disk Health (S.M.A.R.T):" $acc 13 $true 12 14
+    foreach ($d in $pds) {
+        $ok = ($d.HealthStatus -eq "Healthy")
+        $hb = if ($ok) { $sub } else { [System.Windows.Media.Brushes]::OrangeRed }
+        Add-AuditText "- $($d.FriendlyName): $(if($ok){'[Healthy]'}else{'[WARNING]'}) (Status: $($d.OperationalStatus))" $hb 12.5 $false 2 30
+    }
+
+    Add-AuditText "* Network Interfaces & Latency:" $acc 13 $true 12 14
+    foreach ($nic in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Up" })) {
+        Add-AuditText "- $($nic.Name) ($($nic.InterfaceDescription)) - Link: $($nic.LinkSpeed)" $sub 12.5 $false 2 30
+    }
+    try {
+        $pg = Test-Connection -ComputerName 8.8.8.8 -Count 1 -ErrorAction Stop
+        $ms = if ($pg.ResponseTime -ne $null) { $pg.ResponseTime } else { $pg.Latency }
+        Add-AuditText "- Internet Ping (8.8.8.8): $ms ms" $fg 12.5 $false 2 30
+    } catch { Add-AuditText "- Internet Ping (8.8.8.8): unavailable" $sub 12.5 $false 2 30 }
+
+    # ---- Phase 2 ----
+    Add-AuditHeader "Phase 2: Define Usage Profile (Customization)"
+    Add-AuditText "What is the primary use case for this PC? (Select one):" $fg 13 $false 0 0
+    $script:AuditRows = @()
+    $vms = $script:CategoryVms[$script:AuditCatIndex]
+    for ($i = 0; $i -lt $vms.Count; $i++) {
+        $raw = $vms[$i].Raw
+        $bd = New-Object System.Windows.Controls.Border
+        $bd.CornerRadius = New-Object System.Windows.CornerRadius(10); $bd.BorderThickness = New-Object System.Windows.Thickness(1)
+        $bd.Padding = New-Object System.Windows.Thickness(14, 10, 14, 10); $bd.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
+        $bd.Cursor = [System.Windows.Input.Cursors]::Hand; $bd.Tag = $i
+        $dock = New-Object System.Windows.Controls.DockPanel
+        $dot = New-Object System.Windows.Shapes.Ellipse
+        $dot.Width = 12; $dot.Height = 12; $dot.StrokeThickness = 1.5; $dot.Stroke = $acc
+        $dot.Margin = New-Object System.Windows.Thickness(0, 0, 14, 0); $dot.VerticalAlignment = 'Center'
+        [System.Windows.Controls.DockPanel]::SetDock($dot, 'Left')
+        $tb = New-Object System.Windows.Controls.TextBlock
+        $tb.FontFamily = New-Object System.Windows.Media.FontFamily("Consolas"); $tb.FontSize = 13; $tb.TextWrapping = 'Wrap'
+        $r1 = New-Object System.Windows.Documents.Run("[$($i + 1)] "); $r1.Foreground = $acc; $r1.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $r2 = New-Object System.Windows.Documents.Run($raw.Title); $r2.Foreground = $fg; $r2.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $r3 = New-Object System.Windows.Documents.Run(" - $($raw.Desc)"); $r3.Foreground = $sub
+        $tb.Inlines.Add($r1); $tb.Inlines.Add($r2); $tb.Inlines.Add($r3)
+        $dock.Children.Add($dot) | Out-Null; $dock.Children.Add($tb) | Out-Null
+        $bd.Child = $dock
+        $bd.Add_MouseLeftButtonUp({
+            $idx = [int]$this.Tag; $list = $script:CategoryVms[$script:AuditCatIndex]
+            $was = [bool]$list[$idx].Selected
+            foreach ($v in $list) { $v.Selected = $false }
+            if (-not $was) { $list[$idx].Selected = $true }
+            Update-AuditSelection; Render-SideMenu
+        })
+        $AuditStack.Children.Add($bd) | Out-Null
+        $script:AuditRows += [pscustomobject]@{ Border = $bd; Dot = $dot }
+    }
+    Update-AuditSelection
+    $script:AuditBuilt = $true
+}
+function Show-AuditPage {
+    for ($i = 0; $i -lt $script:Categories.Count; $i++) { if ($script:Categories[$i].Key -eq "audit") { $script:AuditCatIndex = $i } }
+    if (-not $script:AuditBuilt) {
+        $window.Cursor = [System.Windows.Input.Cursors]::Wait
+        $window.Dispatcher.Invoke([action]{}, "Background")
+        try { Build-AuditPage } catch { $AuditStack.Children.Clear(); Add-AuditText "Hardware audit failed: $($_.Exception.Message)" ($window.Resources["ThemeSub"]) }
+        $window.Cursor = $null
+    } else { Update-AuditSelection }
 }
 function Show-Category {
     $script:IsInstallPhase=$false; $cat=$script:Categories[$script:CurrentCategoryIndex]
@@ -918,15 +1061,19 @@ function Show-Category {
     $PageDesc.Text=(L (-join([char]0x05D1,[char]0x05D7,[char]0x05E8,[char]0x0020,[char]0x05DE,[char]0x05D4,[char]0x0020,[char]0x05DC,[char]0x05D4,[char]0x05EA,[char]0x05E7,[char]0x05D9,[char]0x05DF,[char]0x002E)) "Select what to install.")
     $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]
     if($cat.Key -eq "custom"){$SearchBoxBorder.Visibility='Visible'}else{$SearchBoxBorder.Visibility='Collapsed'}
-    if($cat.Key -eq "audit"){Show-AuditCard}else{$AuditCard.Visibility='Collapsed'}
+    if($cat.Key -eq "audit"){
+        $ItemsList.Parent.Visibility='Collapsed'; $AuditPage.Visibility='Visible'; $BtnSelectAll.Visibility='Collapsed'
+        $PageDesc.Text=(L (He @(0x05D1,0x05D7,0x05E8,0x20,0x05E4,0x05E8,0x05D5,0x05E4,0x05D9,0x05DC,0x20,0x05E9,0x05D9,0x05DE,0x05D5,0x05E9,0x20,0x05DC,0x05DE,0x05D7,0x05E9,0x05D1,0x2E)) "Choose a usage profile for this PC.")
+        Show-AuditPage
+    } else { $ItemsList.Parent.Visibility='Visible'; $AuditPage.Visibility='Collapsed'; $BtnSelectAll.Visibility='Visible' }
     $BrowsePanel.Visibility='Visible'; $InstallPanel.Visibility='Collapsed'
     $InstallProgress.Value=0; $StatusText.Text=(L (-join([char]0x05DE,[char]0x05D5,[char]0x05DB,[char]0x05DF,[char]0x002E)) "Ready.")
     $BtnBack.IsEnabled=$true; $BtnNext.IsEnabled=$true; Render-SideMenu
 }
 function Get-SelectedSoftware { $sel=New-Object System.Collections.Generic.List[object]; for($i=0;$i -lt $script:CategoryVms.Count;$i++){foreach($vm in $script:CategoryVms[$i]){if($vm.Selected){$sel.Add($vm.Raw)}}}; return $sel }
 
-$BtnSelectAll.Add_Click({ foreach($vm in $script:CategoryVms[$script:CurrentCategoryIndex]){$vm.Selected=$true}; $ItemsList.ItemsSource=$null; $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]; Render-SideMenu })
-$BtnDeselectAll.Add_Click({ foreach($vm in $script:CategoryVms[$script:CurrentCategoryIndex]){$vm.Selected=$false}; $ItemsList.ItemsSource=$null; $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]; Render-SideMenu })
+$BtnSelectAll.Add_Click({ if($script:Categories[$script:CurrentCategoryIndex].Key -eq "audit"){return}; foreach($vm in $script:CategoryVms[$script:CurrentCategoryIndex]){$vm.Selected=$true}; $ItemsList.ItemsSource=$null; $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]; Render-SideMenu })
+$BtnDeselectAll.Add_Click({ foreach($vm in $script:CategoryVms[$script:CurrentCategoryIndex]){$vm.Selected=$false}; $ItemsList.ItemsSource=$null; $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]; if($script:Categories[$script:CurrentCategoryIndex].Key -eq "audit"){Update-AuditSelection}; Render-SideMenu })
 
 function Start-InstallPhase {
     $selected=@(Get-SelectedSoftware)

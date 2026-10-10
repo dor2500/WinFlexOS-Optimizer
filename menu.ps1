@@ -42,12 +42,12 @@
         Key = "audit"
         Icon = "$([char]0xE9D9)"
         Items = @(
-            [pscustomobject]@{ Name = "Hardware Audit Report"; TweakId = "HardwareAudit"; IsTweak = $true }
-            [pscustomobject]@{ Name = "Create Restore Point"; TweakId = "RestorePoint"; IsTweak = $true }
-            [pscustomobject]@{ Name = "Privacy & Telemetry Lockdown"; TweakId = "PrivacyLock"; IsTweak = $true }
-            [pscustomobject]@{ Name = "Remove Bloatware Apps"; TweakId = "BloatRemoval"; IsTweak = $true }
-            [pscustomobject]@{ Name = "Network Latency Tuning"; TweakId = "NetworkTune"; IsTweak = $true }
-            [pscustomobject]@{ Name = "UNDO - Restore Defaults"; TweakId = "UndoAll"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Profile: Gaming"; Title = "Gaming"; Desc = "Max performance, zero mouse accel, lower network latency."; TweakId = "AuditProfile1"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Profile: Office & Browsing"; Title = "Office & Browsing"; Desc = "Stability, power saving, bloatware removal."; TweakId = "AuditProfile2"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Profile: Content Creation"; Title = "Content Creation"; Desc = "Maximize stable resources for rendering/production."; TweakId = "AuditProfile3"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Profile: AI & Machine Learning"; Title = "AI & Machine Learning"; Desc = "Deep system scan, max RAM/VRAM utilization, Long Paths."; TweakId = "AuditProfile4"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Profile: Forensic Deep Scan"; Title = "Forensic Deep Scan"; Desc = "Driver & Targeted Folder Analysis - ~5-10 Minutes."; TweakId = "AuditProfile5"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Profile: UNDO"; Title = "UNDO"; Desc = "Revert all optimizations to Windows defaults."; TweakId = "AuditProfile6"; IsTweak = $true }
         )
     }
 )
