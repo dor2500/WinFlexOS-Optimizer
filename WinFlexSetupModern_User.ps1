@@ -1,4 +1,4 @@
-﻿# WinFlexSetupModern.ps1 - V4.1 Design
+# WinFlexSetupModern.ps1 - V4.1 Design
 #Requires -Version 5.1
 
 param(
@@ -6,11 +6,9 @@ param(
     [string]$MenuPath
 )
 
-Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
-
 $script:isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $scriptPath = $MyInvocation.MyCommand.Path
-
+# If running via irm/iex, $scriptPath will be empty. We handle this gracefully.
 if (-not $scriptPath) {
     $script:scriptDir = $env:TEMP
 } else {
@@ -19,12 +17,14 @@ if (-not $scriptPath) {
 
 if (-not $script:isAdmin) {
     if ($scriptPath) {
-        Start-Process powershell.exe -Verb RunAs -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", "`"$scriptPath`"") -WindowStyle Normal
+        Write-Host "Elevating to Administrator..." -ForegroundColor Yellow
+        Start-Process powershell.exe -Verb RunAs -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", "`"$scriptPath`"")
+        exit
     } else {
-        $remoteCmd = "irm https://raw.githubusercontent.com/dor2500/WinFlexOS-Optimizer/master/WinFlexSetupModern.ps1 | iex"
-        Start-Process powershell.exe -Verb RunAs -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-Command", $remoteCmd) -WindowStyle Normal
+        Write-Warning "Running in-memory (irm | iex). Please run PowerShell as Administrator first!"
+        Write-Host "Example: Right-click PowerShell -> Run as Administrator, then paste your command." -ForegroundColor Cyan
+        exit
     }
-    exit
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
@@ -70,315 +70,6 @@ function Invoke-WingetInstall([string]$Id, [bool]$IsExact=$true) {
     $p = Start-Process -FilePath "winget" -ArgumentList $a -PassThru -Wait -NoNewWindow
     if ($p.ExitCode -ne 0) { throw "winget failed for $Id (ExitCode=$($p.ExitCode))" }
 }
-
-# ===== ADDED HARDWARE AUDIT & TWEAKS =====
-function Get-SystemHardwareAudit {
-    $systemEnclosure = Get-CimInstance -ClassName Win32_SystemEnclosure -ErrorAction SilentlyContinue
-    $chassisTypes = $systemEnclosure.ChassisTypes
-    $batteryCheck = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue
-    
-    $laptopChassisCodes = @(8, 9, 10, 11, 12, 14, 18, 21, 30, 31, 32)
-    $script:IsLaptop = if ($batteryCheck) { $true } else { $false }
-    if (-not $script:IsLaptop) {
-        foreach ($c in $chassisTypes) { if ($laptopChassisCodes -contains $c) { $script:IsLaptop = $true; break } }
-    }
-    
-    $formFactorName = if ($script:IsLaptop) { "Laptop" } else { "Desktop" }
-    $osInfo = Get-CimInstance Win32_OperatingSystem
-    $isWin11 = $osInfo.BuildNumber -ge 22000
-    $osName = if ($isWin11) { "Windows 11" } else { "Windows 10" }
-
-    $script:cpu = Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
-    $baseboard = Get-CimInstance -ClassName Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
-    $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
-    
-    $ramSticks = Get-CimInstance -ClassName Win32_PhysicalMemory -ErrorAction SilentlyContinue
-    $script:totalRamGB = [math]::Round((($ramSticks | Measure-Object -Property Capacity -Sum).Sum) / 1GB, 2)
-    $script:gpus = Get-CimInstance -ClassName Win32_VideoController -ErrorAction SilentlyContinue
-    $disks = Get-PhysicalDisk -ErrorAction SilentlyContinue
-    
-    $script:hasSSD = $false
-    foreach ($d in $disks) {
-        if ($d.MediaType -eq "SSD" -or $d.BusType -eq "NVMe") { $script:hasSSD = $true }
-    }
-    
-    $auditText = "System: $osName (Build $($osInfo.BuildNumber)) - $formFactorName`n"
-    $auditText += "Model: $($computerSystem.Manufacturer) $($computerSystem.Model)`n"
-    $auditText += "CPU: $($script:cpu.Name)`n"
-    $auditText += "RAM: $($script:totalRamGB) GB`n"
-    if ($script:gpus) {
-        $auditText += "GPU(s): " + ($script:gpus | ForEach-Object { $_.Name }) -join ", " + "`n"
-    }
-    $auditText += "SSD Detected: $script:hasSSD"
-    
-    return $auditText
-}
-
-function Invoke-ExtremeDebloat {
-    Write-Host "`n[*] Performing EXTREME System Debloat & Privacy Lock-Down..." -ForegroundColor Red
-    Start-Sleep -Seconds 1
-    
-    # 1. Telemetry Services
-    Write-Host " [~] Shredding Microsoft Telemetry Services..." -ForegroundColor DarkGray
-    $telemetryServices = @("DiagTrack", "dmwappushservice", "WerSvc", "WaaSMedicSvc")
-    foreach ($svc in $telemetryServices) {
-        Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-        Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
-    }
-    
-    # 2. Cortana & Web Search
-    Write-Host " [~] Nuking Cortana and Start Menu Web Search..." -ForegroundColor DarkGray
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "AllowCortana" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "DisableWebSearch" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableSearchBoxSuggestions" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-    
-    # 3. Privacy & Activity Tracking
-    Write-Host " [~] Disabling Location, Activity Timeline, and Ad ID..." -ForegroundColor DarkGray
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "EnableActivityFeed" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "PublishUserActivities" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" -Name "DisableLocation" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo" -Name "Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy" -Name "TailoredExperiencesWithDiagnosticDataEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    
-    # 4. Delivery Optimization
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    
-    # 5. Explorer Quality of Life (Show Extensions)
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    
-    # 6. SysMain (SuperFetch) for SSDs
-    if ($script:hasSSD) {
-        Write-Host " [~] SSD Detected: Disabling SysMain (SuperFetch)..." -ForegroundColor DarkGray
-        Stop-Service -Name "SysMain" -Force -ErrorAction SilentlyContinue
-        Set-Service -Name "SysMain" -StartupType Disabled -ErrorAction SilentlyContinue
-    }
-    
-    # 7. UWP Bloatware
-    Write-Host " [~] Purging UWP Bloatware Apps..." -ForegroundColor DarkGray
-    $bloatware = @(
-        "Microsoft.BingNews", "Microsoft.MicrosoftSolitaireCollection", "Microsoft.NetworkSpeedTest",
-        "Microsoft.SkypeApp", "Microsoft.WindowsFeedbackHub", "Microsoft.ZuneVideo", "Microsoft.ZuneMusic",
-        "SpotifyAB.SpotifyMusic", "Clipchamp.Clipchamp", "Microsoft.Todos", "Microsoft.YourPhone", "Microsoft.MixedReality.Portal", "Microsoft.GetHelp"
-    )
-    foreach ($app in $bloatware) {
-        Get-AppxPackage -Name "*$app*" -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
-    }
-    Start-Sleep -Seconds 1
-}
-
-function Invoke-ForensicDeepScan {
-    Write-Host "`n[*] ========================================================" -ForegroundColor Magenta
-    Write-Host "    🕵️ INITIATING FORENSIC DEEP SCAN (Estimated Time: 5-10 Minutes)" -ForegroundColor Red
-    Write-Host "==========================================================" -ForegroundColor Magenta
-    
-    $reportPath = Join-Path $env:USERPROFILE "Desktop\Forensic_System_Report.txt"
-    Write-Host "[!] A detailed forensic report will be saved to: $reportPath" -ForegroundColor Yellow
-    "========================================================" | Out-File $reportPath -Encoding utf8
-    " FORENSIC SYSTEM REPORT - $(Get-Date)" | Out-File $reportPath -Append -Encoding utf8
-    "========================================================" | Out-File $reportPath -Append -Encoding utf8
-    
-    # 1. Driver Forensic Scan
-    Write-Host "`n[~] 1/4 Scanning EVERY installed driver in the system..." -ForegroundColor Cyan
-    "--- DRIVER AUDIT ---" | Out-File $reportPath -Append -Encoding utf8
-    $drivers = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue
-    $totalDrivers = $drivers.Count
-    $dCount = 0
-    foreach ($drv in $drivers) {
-        $dCount++
-        if ($dCount % 5 -eq 0) { Write-Progress -Activity "Scanning Drivers" -Status "$dCount / $totalDrivers" -PercentComplete (($dCount/$totalDrivers)*100) }
-        $line = "Driver: $($drv.DeviceName) | Provider: $($drv.ProviderName) | Version: $($drv.DriverVersion) | Class: $($drv.DeviceClass) | Path: $($drv.Location)"
-        $line | Out-File $reportPath -Append -Encoding utf8
-    }
-    Write-Progress -Activity "Scanning Drivers" -Completed
-    Write-Host "    [✓] Scanned $totalDrivers active hardware drivers." -ForegroundColor Green
-    
-    # 2. Third Party / OEM Drivers (Driver Store)
-    Write-Host "[~] 2/4 Analyzing Driver Store (OEM & 3rd Party Registry)..." -ForegroundColor Cyan
-    "--- DRIVER STORE (OEM) ---" | Out-File $reportPath -Append -Encoding utf8
-    pnputil /enum-drivers | Out-File $reportPath -Append -Encoding utf8
-    
-    # 3. Deep Folder & EXTREME REGISTRY Scan (Background Job)
-    Write-Host "[~] 3/4 Launching Massive Registry & File Scan in the BACKGROUND..." -ForegroundColor Red
-    Write-Host "    [!] This runs in the background so the console won't freeze. You will see a spinner." -ForegroundColor Yellow
-    "--- FORENSIC REGISTRY & FILE SCAN ---" | Out-File $reportPath -Append -Encoding utf8
-    
-    $jobScript = {
-        $aiExts = @(".safetensors", ".pt", ".bin", ".onnx", ".gguf", ".ckpt")
-        $jnkExts = @(".tmp", ".log", ".dmp", ".bak")
-        $aiFiles = [System.Collections.Generic.List[string]]::new()
-        $junkSize = 0
-        
-        # Files
-        $tDirs = @("$env:USERPROFILE", "C:\ProgramData", "C:\Program Files", "C:\Program Files (x86)")
-        foreach ($d in $tDirs) {
-            if (Test-Path $d) {
-                $files = Get-ChildItem -Path $d -File -Recurse -Force -ErrorAction SilentlyContinue
-                foreach ($f in $files) {
-                    if ($aiExts -contains $f.Extension) { $aiFiles.Add("$($f.FullName) ($([math]::Round($f.Length/1MB, 2)) MB)") }
-                    if ($jnkExts -contains $f.Extension) { $junkSize += $f.Length }
-                }
-            }
-        }
-        
-        # Deep Recursive Registry Scan
-        $suspiciousKeys = [System.Collections.Generic.List[string]]::new()
-        $terms = @(
-            "Telemetry", "Tracking", "Advertising", "Cortana", "DiagTrack",
-            "GameDVR", "OneDrive", "Skype", "MixedReality", "YourPhone",
-            "NewsAndInterests", "Widgets", "MapsBroker", "PeopleExperienceHost",
-            "EdgePrelaunch", "PrintSpooler", "Fax"
-        )
-        $hives = @("HKCU:\Software", "HKLM:\SOFTWARE")
-        foreach ($hive in $hives) {
-            $allKeys = Get-ChildItem -Path $hive -Recurse -ErrorAction SilentlyContinue
-            foreach ($k in $allKeys) {
-                foreach ($t in $terms) {
-                    if ($k.Name -match $t) {
-                        $suspiciousKeys.Add("Found Bloat/Tracker Key ($t): $($k.Name)")
-                        break
-                    }
-                }
-            }
-        }
-        
-        return @{ Ai = $aiFiles; Junk = $junkSize; Reg = $suspiciousKeys }
-    }
-    
-    $job = Start-Job -ScriptBlock $jobScript
-    $spinner = @('|', '/', '-', '\')
-    $c = 0
-    while ($job.State -eq 'Running') {
-        Write-Host -NoNewline "`r    $($spinner[$c % 4]) Deep Scanning Registry & Files... (Running in Background)" -ForegroundColor Cyan
-        $c++
-        Start-Sleep -Milliseconds 100
-    }
-    Write-Host "`r    [✓] Background Registry & File Scan Completed!                     " -ForegroundColor Green
-    
-    $jobRes = Receive-Job -Job $job
-    Remove-Job -Job $job
-    
-    $aiFiles = $jobRes.Ai
-    $junkSize = $jobRes.Junk
-    $suspiciousKeys = $jobRes.Reg
-    
-    # 4. Applications and Packages
-    Write-Host "[~] 4/4 Extracting all installed software & deep Appx packages..." -ForegroundColor Cyan
-    "--- INSTALLED SOFTWARE ---" | Out-File $reportPath -Append -Encoding utf8
-    Get-ItemProperty HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue | Select-Object DisplayName, DisplayVersion, InstallLocation | Out-File $reportPath -Append -Encoding utf8
-    Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue | Select-Object DisplayName, DisplayVersion, InstallLocation | Out-File $reportPath -Append -Encoding utf8
-    
-    "--- UWP APPX PACKAGES ---" | Out-File $reportPath -Append -Encoding utf8
-    Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Select-Object Name, PackageFullName, InstallLocation | Out-File $reportPath -Append -Encoding utf8
-    
-    # Finalize Report
-    "--- SCAN SUMMARY ---" | Out-File $reportPath -Append -Encoding utf8
-    "Total Drivers Audited: $totalDrivers" | Out-File $reportPath -Append -Encoding utf8
-    
-    "Found Suspicious Registry Keys ($($suspiciousKeys.Count)):" | Out-File $reportPath -Append -Encoding utf8
-    foreach ($sk in $suspiciousKeys) { $sk | Out-File $reportPath -Append -Encoding utf8 }
-    
-    "Identified AI/ML Model Files ($($aiFiles.Count)):" | Out-File $reportPath -Append -Encoding utf8
-    foreach ($ai in $aiFiles) { $ai | Out-File $reportPath -Append -Encoding utf8 }
-    "Total Identifiable Junk/Temp/Dump Size: $([math]::Round($junkSize/1GB, 2)) GB" | Out-File $reportPath -Append -Encoding utf8
-    
-    Write-Host "`n[+] FORENSIC SCAN COMPLETE!" -ForegroundColor Green
-    Write-Host "    - Found $($suspiciousKeys.Count) telemetry/tracking keys in the Registry." -ForegroundColor Green
-    Write-Host "    - Found $($aiFiles.Count) AI Models / Weights on disk." -ForegroundColor Green
-    Write-Host "    - Found $([math]::Round($junkSize/1GB, 2)) GB of Temp/Log/Dump Junk files." -ForegroundColor Green
-    Write-Host "    - Full detailed report saved to: $reportPath" -ForegroundColor Yellow
-    
-    Start-Sleep -Seconds 5
-}
-
-function Invoke-SystemTweak($tweakId) {
-    if ($null -eq $script:hasSSD) { Get-SystemHardwareAudit | Out-Null }
-    
-    switch ($tweakId) {
-        "ExtremeDebloat" {
-            Invoke-ExtremeDebloat
-        }
-        "ForensicScan" {
-            Invoke-ForensicDeepScan
-        }
-        "ProfileGaming" {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            if ($script:totalRamGB -ge 16) {
-                Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 0xFFFFFFFF -Type DWord -Force -ErrorAction SilentlyContinue
-                Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            }
-            try { netsh int tcp set global heuristics=disabled | Out-Null; netsh int tcp set global autotuninglevel=normal | Out-Null } catch {}
-            try { bcdedit /deletevalue useplatformclock 2>$null | Out-Null; bcdedit /set disabledynamictick yes 2>$null | Out-Null } catch {}
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
-            if (-not $script:IsLaptop) {
-                powercfg -attributes SUB_PROCESSOR 0cc5b647-c1df-4637-891a-dec35c318583 -ATTRIB_HIDE 2>$null | Out-Null
-                $uGuid = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61
-                if ($uGuid -match "([A-Fa-f0-9\-]{36})") { powercfg -setactive $matches[1] } else { powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c }
-            }
-        }
-        "ProfileOffice" {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e
-        }
-        "ProfileCreator" {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 20 -Type DWord -Force -ErrorAction SilentlyContinue
-            if (-not $script:IsLaptop) { powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c }
-        }
-        "ProfileAI" {
-            # AI & MACHINE LEARNING
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 10 -Type DWord -Force -ErrorAction SilentlyContinue
-            if (-not $script:IsLaptop) {
-                powercfg -attributes SUB_PROCESSOR 0cc5b647-c1df-4637-891a-dec35c318583 -ATTRIB_HIDE 2>$null | Out-Null
-                $uGuid = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61
-                if ($uGuid -match "([A-Fa-f0-9\-]{36})") { powercfg -setactive $matches[1] } else { powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c }
-            }
-            Write-Log "AI Profile applied: Long Paths, Ultimate Power, System Responsiveness adjusted."
-            
-            # Massive AI Scan in Log
-            Write-Log "--- MASSIVE AI SYSTEM DIAGNOSTIC ---"
-            $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-            Write-Log "CPU: $($cpu.Name) | Cores: $($cpu.NumberOfCores) | Threads: $($cpu.NumberOfLogicalProcessors) | L3: $($cpu.L3CacheSize)MB"
-            $mem = Get-CimInstance Win32_PhysicalMemory
-            $totalMem = [math]::Round((($mem | Measure-Object -Property Capacity -Sum).Sum) / 1GB, 2)
-            Write-Log "RAM: $totalMem GB"
-            $nvSmi = (Get-Command "nvidia-smi" -ErrorAction SilentlyContinue).Source
-            if ($nvSmi) {
-                try {
-                    $smiOut = & $nvSmi --query-gpu=name,memory.total,memory.free,temperature.gpu,utilization.gpu --format=csv,noheader
-                    Write-Log "NVIDIA: $smiOut"
-                } catch {}
-            }
-            $disks = Get-CimInstance Win32_LogicalDisk | Where-Object DriveType -eq 3
-            foreach ($d in $disks) {
-                $free = [math]::Round($d.FreeSpace / 1GB, 1)
-                $tot = [math]::Round($d.Size / 1GB, 1)
-                Write-Log "Drive $($d.DeviceID) | Free: $free GB / $tot GB"
-            }
-            $tools = @("python", "git", "docker", "wsl", "ollama", "node", "cmake", "conda", "nvcc")
-            foreach ($tool in $tools) {
-                $path = (Get-Command $tool -ErrorAction SilentlyContinue).Source
-                if ($path) { Write-Log "Found $tool at $path" } else { Write-Log "$tool not found" }
-            }
-            Write-Log "--- END DIAGNOSTIC ---"
-        }
-        "SSDOptimize" {
-            if ($script:hasSSD) {
-                fsutil behavior set DisableDeleteNotify 0 | Out-Null
-                Optimize-Volume -DriveLetter C -ReTrim -ErrorAction SilentlyContinue | Out-Null
-            }
-        }
-    }
-}
-# ==========================================
 
 # # -------- Software Lists (Loaded Dynamically) --------
 # The software lists ($browsers, etc.) and $script:Categories are loaded dynamically from GitHub during the Preflight check.
@@ -709,7 +400,7 @@ function Apply-ThemeByName([string]$Name) {
 $CmbTheme.Add_SelectionChanged({ Apply-ThemeByName ([string]$CmbTheme.SelectedItem) }); Apply-ThemeByName ([string]$CmbTheme.SelectedItem)
 
 function New-ItemVm($item) {
-    $sub=if($item.IsTweak){"System Tweak"}elseif($item.WingetId){"winget: $($item.WingetId)"}elseif($item.Path){"file: $($item.Path)"}else{""}
+    $sub=if($item.WingetId){"winget: $($item.WingetId)"}elseif($item.Path){"file: $($item.Path)"}else{""}
     $sel=$false
     [pscustomobject]@{Name=$item.Name;Sub=$sub;Raw=$item;Selected=$sel}
 }
@@ -770,7 +461,7 @@ function Render-SideMenu {
         $cat=$script:Categories[$i]; $cnt=Get-CategorySelectedCount $i
         $label=(L $cat.TitleHe $cat.TitleEn); if($cnt -gt 0){$label+=" ($cnt)"}
         $btn=New-Object System.Windows.Controls.Button
-        $btn.Content=$label; $ic=[string]$cat.Icon; if($ic -match '^&#x([0-9A-Fa-f]+);$'){$ic=[string][char][Convert]::ToInt32($Matches[1],16)}; $btn.Tag=$ic; $btn.Uid=$i.ToString(); $btn.Style=$window.FindResource("SidebarBtn")
+        $btn.Content=$label; $btn.Tag=$cat.Icon; $btn.Uid=$i.ToString(); $btn.Style=$window.FindResource("SidebarBtn")
         $btn.Add_Click({$script:CurrentCategoryIndex=[int]$this.Uid;Show-Category})
         $SideMenu.Children.Add($btn)|Out-Null; $script:SideButtons+=$btn
     }
@@ -818,8 +509,7 @@ function Start-InstallPhase {
         $InstPct.Text="$([int](($i*100)/$total))%"; $InstProgressBig.Value=[int](($i*100)/$total)
         $InstStatus.Text=(L ((-join([char]0x05DE,[char]0x05EA,[char]0x05E7,[char]0x05D9,[char]0x05DF,[char]0x003A,[char]0x0020))+$name) "Installing: $name"); $window.Dispatcher.Invoke([action]{},"Background")
         try{ Write-Log "Install start: $name"
-            if($sw.IsTweak) { Invoke-SystemTweak $sw.TweakId }
-            elseif($sw.IsCustom) { Invoke-WingetInstall $sw.WingetId $false }
+            if($sw.IsCustom) { Invoke-WingetInstall $sw.WingetId $false }
             elseif($sw.WingetId){Invoke-WingetInstall $sw.WingetId}
             elseif($sw.Path){if(-not(Test-Path -LiteralPath $sw.Path)){throw "Not found: $($sw.Path)"};Start-Process -FilePath $sw.Path -Wait}
             else{throw "Unknown method"}; Write-Log "Install success: $name"
@@ -950,10 +640,8 @@ $b12 = He @(0x0033, 0x002E, 0x0020, 0x05D1, 0x05D7, 0x05E8, 0x05D5, 0x0020, 0x05
 $b13 = He @(0x0034, 0x002E, 0x0020, 0x05D1, 0x05E1, 0x05D9, 0x05D5, 0x05DD, 0x0020, 0x05D4, 0x05D1, 0x05D7, 0x05D9, 0x05E8, 0x05D4, 0x002C, 0x0020, 0x05DC, 0x05D7, 0x05E6, 0x05D5, 0x0020, 0x05E2, 0x05DC, 0x0020, 0x0027, 0x05D4, 0x05D1, 0x05D0, 0x0027, 0x002C, 0x0020, 0x05D5, 0x05D4, 0x05DE, 0x05E2, 0x05E8, 0x05DB, 0x05EA, 0x0020, 0x05EA, 0x05EA, 0x05D7, 0x05D9, 0x05DC, 0x0020, 0x05D1, 0x05D4, 0x05EA, 0x05E7, 0x05E0, 0x05D4, 0x0020, 0x05E9, 0x05E7, 0x05D8, 0x05D4, 0x0020, 0x05D1, 0x05E8, 0x05E7, 0x05E2, 0x0021, 0x000A)
 $b14 = He @(0x000A)
 $b15 = He @(0x05DC, 0x05D7, 0x05E6, 0x05D5, 0x0020, 0x05E2, 0x05DC, 0x0020, 0x0027, 0x05D4, 0x05D1, 0x05D0, 0x0027, 0x0020, 0x05DB, 0x05D3, 0x05D9, 0x0020, 0x05DC, 0x05D4, 0x05DE, 0x05E9, 0x05D9, 0x05DA, 0x002C, 0x0020, 0x05D0, 0x05D5, 0x0020, 0x05E2, 0x05DC, 0x0020, 0x0027, 0x05DC, 0x05D0, 0x0020, 0x05DE, 0x05E2, 0x05D5, 0x05E0, 0x05D9, 0x05D9, 0x05DF, 0x0027, 0x0020, 0x05DB, 0x05D3, 0x05D9, 0x0020, 0x05DC, 0x05E6, 0x05D0, 0x05EA, 0x0020, 0x05DE, 0x05DB, 0x05D0, 0x05DF, 0x002E)
-$WelcomeIntroText.Text=(L ($b1+$b2+$b3) "").Trim();
-$AboutTitleText.Text=(L (He @(0x05D7,0x05D5,0x05DE,0x05E8,0x05EA,0x0020,0x05D4,0x05DE,0x05E2,0x05E8,0x05DB,0x05EA)) "System Hardware")
-$AboutBodyText.Text=Get-SystemHardwareAudit
-$UsageTitleText.Text=(L $b9 "").Trim()
+$WelcomeIntroText.Text=(L ($b1+$b2+$b3) "").Trim(); $AboutTitleText.Text=(L $b4 "").Trim()
+$AboutBodyText.Text=(L ($b5+$b6+$b7+$b7a+$b7b) "").Trim(); $UsageTitleText.Text=(L $b9 "").Trim()
 $UsageBodyText.Text=(L ($b10+$b11+$b12+$b13) "").Trim(); $HintText.Text=(L $b15 "").Trim()
 Apply-Language
 
@@ -1007,4 +695,3 @@ $IntroVideo.Add_MediaEnded({
 })
 
 $window.ShowDialog()|Out-Null
-
