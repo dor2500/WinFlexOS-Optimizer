@@ -422,6 +422,60 @@ function Invoke-SystemTweak($tweakId) {
         "AuditProfile4" { Invoke-ExtremeDebloat; Invoke-RestorePointSafe; Invoke-SystemTweak "SSDOptimize"; Invoke-SystemTweak "ProfileAI" }
         "AuditProfile5" { Invoke-ForensicDeepScan }
         "AuditProfile6" { Invoke-UndoTweaks }
+        "ClearTemp" {
+            foreach ($p in @($env:TEMP, "$env:SystemRoot\Temp", "$env:LOCALAPPDATA\Microsoft\Windows\INetCache", "$env:LOCALAPPDATA\CrashDumps")) {
+                if (Test-Path $p) { Get-ChildItem -Path $p -Force -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notlike "*winflex*" } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
+            }
+            Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+            Remove-Item "$env:LOCALAPPDATA\Microsoft\Windows\Explorer\thumbcache_*.db" -Force -ErrorAction SilentlyContinue
+            Write-Log "Temp files, caches, crash dumps and Recycle Bin cleaned."
+        }
+        "ShowHiddenFiles" {
+            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "Hidden" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            Write-Log "Explorer: hidden files and file extensions are now visible (applies on next Explorer restart/sign-in)."
+        }
+        "DarkMode" {
+            $k = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+            Set-ItemProperty -Path $k -Name "AppsUseLightTheme" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $k -Name "SystemUsesLightTheme" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            Write-Log "Windows dark mode enabled."
+        }
+        "ClassicContextMenu" {
+            New-Item -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" -Name "(default)" -Value "" -Force -ErrorAction SilentlyContinue
+            Write-Log "Classic (full) right-click menu enabled for Windows 11 (applies after sign-out/restart)."
+        }
+        "DisableCopilot" {
+            New-Item -Path "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" -Name "TurnOffWindowsCopilot" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" -Name "TurnOffWindowsCopilot" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            Write-Log "Windows Copilot disabled by policy."
+        }
+        "NoConsumerContent" {
+            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Name "DisableWindowsConsumerFeatures" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Name "DisableSoftLanding" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            $cdm = "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
+            foreach ($n in @("SubscribedContent-338388Enabled","SubscribedContent-338389Enabled","SubscribedContent-353694Enabled","SubscribedContent-353696Enabled","SilentInstalledAppsEnabled","SystemPaneSuggestionsEnabled","SoftLandingEnabled","RotatingLockScreenOverlayEnabled")) {
+                Set-ItemProperty -Path $cdm -Name $n -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            }
+            Write-Log "Consumer content, app suggestions and silent app installs disabled."
+        }
+        "NetworkReset" {
+            ipconfig /flushdns | Out-Null
+            netsh winsock reset | Out-Null
+            netsh int ip reset | Out-Null
+            Write-Log "DNS cache flushed; Winsock and TCP/IP stack reset (restart recommended)."
+        }
+        "CleanupWinUpdate" {
+            Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+            Remove-Item "$env:SystemRoot\SoftwareDistribution\Download\*" -Recurse -Force -ErrorAction SilentlyContinue
+            Start-Service -Name wuauserv -ErrorAction SilentlyContinue
+            Dism.exe /Online /Cleanup-Image /StartComponentCleanup | Out-Null
+            Write-Log "Windows Update download cache and component store cleaned."
+        }
         "ForensicScan" {
             Invoke-ForensicDeepScan
         }
