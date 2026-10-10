@@ -114,28 +114,194 @@ function Get-SystemHardwareAudit {
     return $auditText
 }
 
+function Invoke-ExtremeDebloat {
+    Write-Host "`n[*] Performing EXTREME System Debloat & Privacy Lock-Down..." -ForegroundColor Red
+    Start-Sleep -Seconds 1
+    
+    # 1. Telemetry Services
+    Write-Host " [~] Shredding Microsoft Telemetry Services..." -ForegroundColor DarkGray
+    $telemetryServices = @("DiagTrack", "dmwappushservice", "WerSvc", "WaaSMedicSvc")
+    foreach ($svc in $telemetryServices) {
+        Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+        Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+    }
+    
+    # 2. Cortana & Web Search
+    Write-Host " [~] Nuking Cortana and Start Menu Web Search..." -ForegroundColor DarkGray
+    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "AllowCortana" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "DisableWebSearch" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableSearchBoxSuggestions" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+    
+    # 3. Privacy & Activity Tracking
+    Write-Host " [~] Disabling Location, Activity Timeline, and Ad ID..." -ForegroundColor DarkGray
+    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "EnableActivityFeed" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "PublishUserActivities" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" -Name "DisableLocation" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo" -Name "Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy" -Name "TailoredExperiencesWithDiagnosticDataEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    
+    # 4. Delivery Optimization
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    
+    # 5. Explorer Quality of Life (Show Extensions)
+    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    
+    # 6. SysMain (SuperFetch) for SSDs
+    if ($script:hasSSD) {
+        Write-Host " [~] SSD Detected: Disabling SysMain (SuperFetch)..." -ForegroundColor DarkGray
+        Stop-Service -Name "SysMain" -Force -ErrorAction SilentlyContinue
+        Set-Service -Name "SysMain" -StartupType Disabled -ErrorAction SilentlyContinue
+    }
+    
+    # 7. UWP Bloatware
+    Write-Host " [~] Purging UWP Bloatware Apps..." -ForegroundColor DarkGray
+    $bloatware = @(
+        "Microsoft.BingNews", "Microsoft.MicrosoftSolitaireCollection", "Microsoft.NetworkSpeedTest",
+        "Microsoft.SkypeApp", "Microsoft.WindowsFeedbackHub", "Microsoft.ZuneVideo", "Microsoft.ZuneMusic",
+        "SpotifyAB.SpotifyMusic", "Clipchamp.Clipchamp", "Microsoft.Todos", "Microsoft.YourPhone", "Microsoft.MixedReality.Portal", "Microsoft.GetHelp"
+    )
+    foreach ($app in $bloatware) {
+        Get-AppxPackage -Name "*$app*" -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 1
+}
+
+function Invoke-ForensicDeepScan {
+    Write-Host "`n[*] ========================================================" -ForegroundColor Magenta
+    Write-Host "    🕵️ INITIATING FORENSIC DEEP SCAN (Estimated Time: 5-10 Minutes)" -ForegroundColor Red
+    Write-Host "==========================================================" -ForegroundColor Magenta
+    
+    $reportPath = Join-Path $env:USERPROFILE "Desktop\Forensic_System_Report.txt"
+    Write-Host "[!] A detailed forensic report will be saved to: $reportPath" -ForegroundColor Yellow
+    "========================================================" | Out-File $reportPath -Encoding utf8
+    " FORENSIC SYSTEM REPORT - $(Get-Date)" | Out-File $reportPath -Append -Encoding utf8
+    "========================================================" | Out-File $reportPath -Append -Encoding utf8
+    
+    # 1. Driver Forensic Scan
+    Write-Host "`n[~] 1/4 Scanning EVERY installed driver in the system..." -ForegroundColor Cyan
+    "--- DRIVER AUDIT ---" | Out-File $reportPath -Append -Encoding utf8
+    $drivers = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue
+    $totalDrivers = $drivers.Count
+    $dCount = 0
+    foreach ($drv in $drivers) {
+        $dCount++
+        if ($dCount % 5 -eq 0) { Write-Progress -Activity "Scanning Drivers" -Status "$dCount / $totalDrivers" -PercentComplete (($dCount/$totalDrivers)*100) }
+        $line = "Driver: $($drv.DeviceName) | Provider: $($drv.ProviderName) | Version: $($drv.DriverVersion) | Class: $($drv.DeviceClass) | Path: $($drv.Location)"
+        $line | Out-File $reportPath -Append -Encoding utf8
+    }
+    Write-Progress -Activity "Scanning Drivers" -Completed
+    Write-Host "    [✓] Scanned $totalDrivers active hardware drivers." -ForegroundColor Green
+    
+    # 2. Third Party / OEM Drivers (Driver Store)
+    Write-Host "[~] 2/4 Analyzing Driver Store (OEM & 3rd Party Registry)..." -ForegroundColor Cyan
+    "--- DRIVER STORE (OEM) ---" | Out-File $reportPath -Append -Encoding utf8
+    pnputil /enum-drivers | Out-File $reportPath -Append -Encoding utf8
+    
+    # 3. Deep Folder & EXTREME REGISTRY Scan (Background Job)
+    Write-Host "[~] 3/4 Launching Massive Registry & File Scan in the BACKGROUND..." -ForegroundColor Red
+    Write-Host "    [!] This runs in the background so the console won't freeze. You will see a spinner." -ForegroundColor Yellow
+    "--- FORENSIC REGISTRY & FILE SCAN ---" | Out-File $reportPath -Append -Encoding utf8
+    
+    $jobScript = {
+        $aiExts = @(".safetensors", ".pt", ".bin", ".onnx", ".gguf", ".ckpt")
+        $jnkExts = @(".tmp", ".log", ".dmp", ".bak")
+        $aiFiles = [System.Collections.Generic.List[string]]::new()
+        $junkSize = 0
+        
+        # Files
+        $tDirs = @("$env:USERPROFILE", "C:\ProgramData", "C:\Program Files", "C:\Program Files (x86)")
+        foreach ($d in $tDirs) {
+            if (Test-Path $d) {
+                $files = Get-ChildItem -Path $d -File -Recurse -Force -ErrorAction SilentlyContinue
+                foreach ($f in $files) {
+                    if ($aiExts -contains $f.Extension) { $aiFiles.Add("$($f.FullName) ($([math]::Round($f.Length/1MB, 2)) MB)") }
+                    if ($jnkExts -contains $f.Extension) { $junkSize += $f.Length }
+                }
+            }
+        }
+        
+        # Deep Recursive Registry Scan
+        $suspiciousKeys = [System.Collections.Generic.List[string]]::new()
+        $terms = @(
+            "Telemetry", "Tracking", "Advertising", "Cortana", "DiagTrack",
+            "GameDVR", "OneDrive", "Skype", "MixedReality", "YourPhone",
+            "NewsAndInterests", "Widgets", "MapsBroker", "PeopleExperienceHost",
+            "EdgePrelaunch", "PrintSpooler", "Fax"
+        )
+        $hives = @("HKCU:\Software", "HKLM:\SOFTWARE")
+        foreach ($hive in $hives) {
+            $allKeys = Get-ChildItem -Path $hive -Recurse -ErrorAction SilentlyContinue
+            foreach ($k in $allKeys) {
+                foreach ($t in $terms) {
+                    if ($k.Name -match $t) {
+                        $suspiciousKeys.Add("Found Bloat/Tracker Key ($t): $($k.Name)")
+                        break
+                    }
+                }
+            }
+        }
+        
+        return @{ Ai = $aiFiles; Junk = $junkSize; Reg = $suspiciousKeys }
+    }
+    
+    $job = Start-Job -ScriptBlock $jobScript
+    $spinner = @('|', '/', '-', '\')
+    $c = 0
+    while ($job.State -eq 'Running') {
+        Write-Host -NoNewline "`r    $($spinner[$c % 4]) Deep Scanning Registry & Files... (Running in Background)" -ForegroundColor Cyan
+        $c++
+        Start-Sleep -Milliseconds 100
+    }
+    Write-Host "`r    [✓] Background Registry & File Scan Completed!                     " -ForegroundColor Green
+    
+    $jobRes = Receive-Job -Job $job
+    Remove-Job -Job $job
+    
+    $aiFiles = $jobRes.Ai
+    $junkSize = $jobRes.Junk
+    $suspiciousKeys = $jobRes.Reg
+    
+    # 4. Applications and Packages
+    Write-Host "[~] 4/4 Extracting all installed software & deep Appx packages..." -ForegroundColor Cyan
+    "--- INSTALLED SOFTWARE ---" | Out-File $reportPath -Append -Encoding utf8
+    Get-ItemProperty HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue | Select-Object DisplayName, DisplayVersion, InstallLocation | Out-File $reportPath -Append -Encoding utf8
+    Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue | Select-Object DisplayName, DisplayVersion, InstallLocation | Out-File $reportPath -Append -Encoding utf8
+    
+    "--- UWP APPX PACKAGES ---" | Out-File $reportPath -Append -Encoding utf8
+    Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Select-Object Name, PackageFullName, InstallLocation | Out-File $reportPath -Append -Encoding utf8
+    
+    # Finalize Report
+    "--- SCAN SUMMARY ---" | Out-File $reportPath -Append -Encoding utf8
+    "Total Drivers Audited: $totalDrivers" | Out-File $reportPath -Append -Encoding utf8
+    
+    "Found Suspicious Registry Keys ($($suspiciousKeys.Count)):" | Out-File $reportPath -Append -Encoding utf8
+    foreach ($sk in $suspiciousKeys) { $sk | Out-File $reportPath -Append -Encoding utf8 }
+    
+    "Identified AI/ML Model Files ($($aiFiles.Count)):" | Out-File $reportPath -Append -Encoding utf8
+    foreach ($ai in $aiFiles) { $ai | Out-File $reportPath -Append -Encoding utf8 }
+    "Total Identifiable Junk/Temp/Dump Size: $([math]::Round($junkSize/1GB, 2)) GB" | Out-File $reportPath -Append -Encoding utf8
+    
+    Write-Host "`n[+] FORENSIC SCAN COMPLETE!" -ForegroundColor Green
+    Write-Host "    - Found $($suspiciousKeys.Count) telemetry/tracking keys in the Registry." -ForegroundColor Green
+    Write-Host "    - Found $($aiFiles.Count) AI Models / Weights on disk." -ForegroundColor Green
+    Write-Host "    - Found $([math]::Round($junkSize/1GB, 2)) GB of Temp/Log/Dump Junk files." -ForegroundColor Green
+    Write-Host "    - Full detailed report saved to: $reportPath" -ForegroundColor Yellow
+    
+    Start-Sleep -Seconds 5
+}
+
 function Invoke-SystemTweak($tweakId) {
     if ($null -eq $script:hasSSD) { Get-SystemHardwareAudit | Out-Null }
     
     switch ($tweakId) {
-        "DeepDebloat" {
-            $telemetryServices = @("DiagTrack", "dmwappushservice", "WerSvc")
-            foreach ($svc in $telemetryServices) {
-                Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-                Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
-            }
-            New-Item -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableSearchBoxSuggestions" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            $bloatware = @(
-                "Microsoft.BingNews", "Microsoft.MicrosoftSolitaireCollection", "Microsoft.NetworkSpeedTest",
-                "Microsoft.SkypeApp", "Microsoft.WindowsFeedbackHub", "Microsoft.ZuneVideo", "Microsoft.ZuneMusic",
-                "SpotifyAB.SpotifyMusic", "Clipchamp.Clipchamp", "Microsoft.Todos", "Microsoft.YourPhone"
-            )
-            foreach ($app in $bloatware) {
-                Get-AppxPackage -Name "*$app*" -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
-            }
+        "ExtremeDebloat" {
+            Invoke-ExtremeDebloat
+        }
+        "ForensicScan" {
+            Invoke-ForensicDeepScan
         }
         "ProfileGaming" {
             Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
@@ -841,3 +1007,4 @@ $IntroVideo.Add_MediaEnded({
 })
 
 $window.ShowDialog()|Out-Null
+

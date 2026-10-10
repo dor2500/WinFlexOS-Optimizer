@@ -5,7 +5,8 @@ $script:Categories = @(
         Key = "tweaks"
         Icon = "&#xE770;"
         Items = @(
-            [pscustomobject]@{ Name = "Deep Debloat (Telemetry & Junk)"; TweakId = "DeepDebloat"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Extreme Gamer Debloat (Remove Telemetry & Xbox/Edge Bloat)"; TweakId = "ExtremeDebloat"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Forensic Deep Scan (Registry & Files - Background)"; TweakId = "ForensicScan"; IsTweak = $true }
             [pscustomobject]@{ Name = "Gaming Profile (Max Perf, Low Ping)"; TweakId = "ProfileGaming"; IsTweak = $true }
             [pscustomobject]@{ Name = "Office Profile (Battery & Stable)"; TweakId = "ProfileOffice"; IsTweak = $true }
             [pscustomobject]@{ Name = "Content Creator Profile"; TweakId = "ProfileCreator"; IsTweak = $true }
