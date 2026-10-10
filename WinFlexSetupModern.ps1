@@ -293,6 +293,116 @@ function Invoke-ForensicDeepScan {
     Start-Sleep -Seconds 5
 }
 
+# ===== PORTED FROM HardwareAuditAndPrivacy.ps1 (GUI-friendly: output goes to log + Desktop report) =====
+function Invoke-HardwareAuditReport {
+    if ($null -eq $script:hasSSD) { Get-SystemHardwareAudit | Out-Null }
+    $reportPath = Join-Path $env:USERPROFILE "Desktop\Hardware_Audit_Report.txt"
+    $r = New-Object System.Collections.Generic.List[string]
+    $r.Add("HARDWARE AUDIT REPORT - $(Get-Date)")
+    $r.Add("==========================================")
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+    $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+    $bb = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
+    $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue | Select-Object -First 1
+    $r.Add("OS: $($os.Caption) (Build $($os.BuildNumber))  |  Form factor: $(if($script:IsLaptop){'Laptop'}else{'Desktop'})")
+    $r.Add("Model: $($cs.Manufacturer) - $($cs.Model)")
+    $r.Add("Motherboard: $($bb.Manufacturer) $($bb.Product) (BIOS: $($bios.SMBIOSBIOSVersion))")
+    $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+    $r.Add("CPU: $($cpu.Name) - $($cpu.NumberOfCores) Cores / $($cpu.NumberOfLogicalProcessors) Threads | $($cpu.MaxClockSpeed) MHz | Virtualization: $($cpu.VirtualizationFirmwareEnabled)")
+    $sticks = Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue
+    $r.Add("RAM: $($script:totalRamGB) GB")
+    $n = 1; foreach ($s in $sticks) { $r.Add("  - Stick $($n): $([math]::Round($s.Capacity/1GB,1)) GB @ $($s.ConfiguredClockSpeed) MHz ($($s.Manufacturer))"); $n++ }
+    $r.Add("GPU(s):")
+    foreach ($g in (Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)) {
+        $vram = if ($g.AdapterRAM -gt 0) { "$([math]::Round($g.AdapterRAM/1GB,2)) GB VRAM" } else { "Shared RAM" }
+        $r.Add("  - $($g.Name) [$vram] Driver: $($g.DriverVersion)")
+    }
+    $r.Add("Storage / Health (S.M.A.R.T):")
+    foreach ($d in (Get-PhysicalDisk -ErrorAction SilentlyContinue)) {
+        $h = if ($d.HealthStatus -eq "Healthy") { "[Healthy]" } else { "[WARNING]" }
+        $r.Add("  - $($d.FriendlyName): $([math]::Round($d.Size/1GB,1)) GB | $($d.MediaType) $($d.BusType) | $h ($($d.OperationalStatus))")
+    }
+    $r.Add("Network:")
+    foreach ($nic in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Up" })) {
+        $r.Add("  - $($nic.Name) ($($nic.InterfaceDescription)) Link: $($nic.LinkSpeed)")
+    }
+    try { $p = Test-Connection -ComputerName 8.8.8.8 -Count 1 -ErrorAction Stop; $ms = if ($p.ResponseTime) { $p.ResponseTime } else { $p.Latency }; $r.Add("  - Ping 8.8.8.8: $ms ms") } catch { $r.Add("  - Ping 8.8.8.8: failed") }
+    $r | Out-File $reportPath -Encoding utf8
+    foreach ($line in $r) { Write-Log $line }
+    Write-Log "Hardware audit report saved to: $reportPath"
+}
+
+function Invoke-RestorePointSafe {
+    try {
+        Enable-ComputerRestore -Drive "C:\" -ErrorAction SilentlyContinue | Out-Null
+        Checkpoint-Computer -Description "WinFlexOS - Before tweaks" -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop
+        Write-Log "Restore point created."
+    } catch { Write-Log "Restore point skipped: $($_.Exception.Message)" }
+}
+
+function Invoke-PrivacyLockdown {
+    foreach ($svc in @("DiagTrack", "dmwappushservice", "WerSvc")) {
+        Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+        Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+    }
+    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "AllowCortana" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "DisableWebSearch" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+    New-Item -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableSearchBoxSuggestions" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "EnableActivityFeed" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "PublishUserActivities" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" -Name "DisableLocation" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo" -Name "Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy" -Name "TailoredExperiencesWithDiagnosticDataEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    Write-Log "Privacy lock-down applied (telemetry, Cortana/web search, activity, location, ad ID, delivery optimization)."
+}
+
+function Invoke-BloatRemoval {
+    $bloatware = @(
+        "Microsoft.BingNews", "Microsoft.MicrosoftSolitaireCollection", "Microsoft.NetworkSpeedTest",
+        "Microsoft.SkypeApp", "Microsoft.WindowsFeedbackHub", "Microsoft.ZuneVideo", "Microsoft.ZuneMusic",
+        "SpotifyAB.SpotifyMusic", "Clipchamp.Clipchamp", "Microsoft.Todos", "Microsoft.YourPhone", "Microsoft.MixedReality.Portal", "Microsoft.GetHelp"
+    )
+    foreach ($app in $bloatware) {
+        Get-AppxPackage -Name "*$app*" -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+    }
+    Write-Log "Bloatware UWP apps removed."
+}
+
+function Invoke-NetworkLatencyTune {
+    try { netsh int tcp set global heuristics=disabled | Out-Null; netsh int tcp set global autotuninglevel=normal | Out-Null } catch {}
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 0xFFFFFFFF -Type DWord -Force -ErrorAction SilentlyContinue
+    Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match "Large Send Offload" } | Set-NetAdapterAdvancedProperty -RegistryValue "0" -ErrorAction SilentlyContinue
+    Write-Log "Network tuned: TCP heuristics off, throttling removed, LSO disabled."
+}
+
+function Invoke-UndoTweaks {
+    foreach ($svc in @("DiagTrack", "dmwappushservice", "WerSvc")) { Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue }
+    Remove-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableSearchBoxSuggestions" -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "DisableWebSearch" -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "AllowCortana" -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 10 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 20 -Type DWord -Force -ErrorAction SilentlyContinue
+    netsh int tcp set global heuristics=enabled | Out-Null
+    netsh int tcp set global autotuninglevel=normal | Out-Null
+    bcdedit /deletevalue disabledynamictick 2>$null | Out-Null
+    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "1" -Type String -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -Value "6" -Type String -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -Value "10" -Type String -Force -ErrorAction SilentlyContinue
+    powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e
+    Write-Log "UNDO complete: defaults restored (services, search, gaming, network, mouse, power plan)."
+}
+# ===== END PORTED FUNCTIONS =====
+
 function Invoke-SystemTweak($tweakId) {
     if ($null -eq $script:hasSSD) { Get-SystemHardwareAudit | Out-Null }
     
@@ -300,6 +410,12 @@ function Invoke-SystemTweak($tweakId) {
         "ExtremeDebloat" {
             Invoke-ExtremeDebloat
         }
+        "HardwareAudit" { Invoke-HardwareAuditReport }
+        "RestorePoint"  { Invoke-RestorePointSafe }
+        "PrivacyLock"   { Invoke-PrivacyLockdown }
+        "BloatRemoval"  { Invoke-BloatRemoval }
+        "NetworkTune"   { Invoke-NetworkLatencyTune }
+        "UndoAll"       { Invoke-UndoTweaks }
         "ForensicScan" {
             Invoke-ForensicDeepScan
         }
