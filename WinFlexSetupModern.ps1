@@ -1075,6 +1075,32 @@ function Get-SelectedSoftware { $sel=New-Object System.Collections.Generic.List[
 $BtnSelectAll.Add_Click({ if($script:Categories[$script:CurrentCategoryIndex].Key -eq "audit"){return}; foreach($vm in $script:CategoryVms[$script:CurrentCategoryIndex]){$vm.Selected=$true}; $ItemsList.ItemsSource=$null; $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]; Render-SideMenu })
 $BtnDeselectAll.Add_Click({ foreach($vm in $script:CategoryVms[$script:CurrentCategoryIndex]){$vm.Selected=$false}; $ItemsList.ItemsSource=$null; $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]; if($script:Categories[$script:CurrentCategoryIndex].Key -eq "audit"){Update-AuditSelection}; Render-SideMenu })
 
+# Runs all selected system tweaks/profiles in ONE detached hidden low-priority PowerShell process.
+# The user can keep using the PC (and even close this window) no matter how long it takes (1h+).
+function Start-BackgroundTweaks([string[]]$ids) {
+    $bgLog = Join-Path $env:TEMP "winflex-background.log"
+    $names = @('Write-Log','Get-SystemHardwareAudit','Invoke-ExtremeDebloat','Invoke-ForensicDeepScan','Invoke-HardwareAuditReport','Invoke-RestorePointSafe','Invoke-PrivacyLockdown','Invoke-BloatRemoval','Invoke-NetworkLatencyTune','Invoke-UndoTweaks','Invoke-SystemTweak')
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine('$ErrorActionPreference = "Continue"')
+    [void]$sb.AppendLine("`$script:LogPath = '" + $bgLog.Replace("'", "''") + "'")
+    [void]$sb.AppendLine('try { (Get-Process -Id $PID).PriorityClass = "BelowNormal" } catch {}')
+    foreach ($n in $names) {
+        $c = Get-Command $n -CommandType Function -ErrorAction SilentlyContinue
+        if ($c) { [void]$sb.AppendLine($c.ScriptBlock.Ast.Extent.Text) }
+    }
+    $idList = ($ids | ForEach-Object { "'" + $_ + "'" }) -join ','
+    [void]$sb.AppendLine('$ids = @(' + $idList + ')')
+    [void]$sb.AppendLine('Write-Log "Background worker started (PID $PID). Tasks: $($ids -join '', '')"')
+    [void]$sb.AppendLine('foreach ($id in $ids) { try { Write-Log "START: $id"; Invoke-SystemTweak $id; Write-Log "DONE: $id" } catch { Write-Log "FAILED: $id :: $($_.Exception.Message)" } }')
+    [void]$sb.AppendLine('Write-Log "Background worker finished."')
+    [void]$sb.AppendLine('try { Add-Type -AssemblyName System.Windows.Forms, System.Drawing; $ni = New-Object System.Windows.Forms.NotifyIcon; $ni.Icon = [System.Drawing.SystemIcons]::Information; $ni.Visible = $true; $ni.ShowBalloonTip(15000, "WinFlexOS", "Background optimization finished. A restart is recommended.", [System.Windows.Forms.ToolTipIcon]::Info); Start-Sleep -Seconds 16; $ni.Dispose() } catch {}')
+    $file = Join-Path $env:TEMP ("winflex-bg-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".ps1")
+    [IO.File]::WriteAllText($file, $sb.ToString(), (New-Object System.Text.UTF8Encoding $true))
+    Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$file`"") | Out-Null
+    Write-Log "Background worker launched: $file (log: $bgLog)"
+    return $bgLog
+}
+
 function Start-InstallPhase {
     $selected=@(Get-SelectedSoftware)
     if($selected.Count -eq 0){$StatusText.Text=(L (-join([char]0x05DC,[char]0x05D0,[char]0x0020,[char]0x05E0,[char]0x05D1,[char]0x05D7,[char]0x05E8,[char]0x0020,[char]0x05DB,[char]0x05DC,[char]0x05D5,[char]0x05DD,[char]0x002E)) "Nothing selected.");return}
@@ -1091,6 +1117,9 @@ function Start-InstallPhase {
         $bundle=Join-Path $tmpDir "Microsoft.DesktopAppInstaller.msixbundle"
         try{(New-Object Net.WebClient).DownloadFile("https://aka.ms/getwinget",$bundle)}catch{}
         try{Add-AppxPackage -Path $bundle -ErrorAction SilentlyContinue|Out-Null}catch{}; Start-Sleep -Seconds 2 }
+    $script:BgStarted=$false; $script:BgLogPath=""
+    $bgTweaks=@($selected | Where-Object { $_.IsTweak } | ForEach-Object { $_.TweakId })
+    if($bgTweaks.Count -gt 0){ try{ $script:BgLogPath=Start-BackgroundTweaks $bgTweaks; $script:BgStarted=$true }catch{ Write-Log "Background start failed: $($_.Exception.Message)" } }
     $total=$selected.Count
     for($i=0;$i -lt $total;$i++){
         $sw=$selected[$i]; $name=$sw.Name
@@ -1098,7 +1127,7 @@ function Start-InstallPhase {
         $InstPct.Text="$([int](($i*100)/$total))%"; $InstProgressBig.Value=[int](($i*100)/$total)
         $InstStatus.Text=(L ((-join([char]0x05DE,[char]0x05EA,[char]0x05E7,[char]0x05D9,[char]0x05DF,[char]0x003A,[char]0x0020))+$name) "Installing: $name"); $window.Dispatcher.Invoke([action]{},"Background")
         try{ Write-Log "Install start: $name"
-            if($sw.IsTweak) { Invoke-SystemTweak $sw.TweakId }
+            if($sw.IsTweak) { if(-not $script:BgStarted){ Invoke-SystemTweak $sw.TweakId } else { Write-Log "Running in background: $name" } }
             elseif($sw.IsCustom) { Invoke-WingetInstall $sw.WingetId $false }
             elseif($sw.WingetId){Invoke-WingetInstall $sw.WingetId}
             elseif($sw.Path){if(-not(Test-Path -LiteralPath $sw.Path)){throw "Not found: $($sw.Path)"};Start-Process -FilePath $sw.Path -Wait}
@@ -1108,6 +1137,7 @@ function Start-InstallPhase {
     $InstProgressBig.Value=100; $InstPct.Text="100%"
     $InstTitle.Text=(L (-join([char]0x05D4,[char]0x05D5,[char]0x05E9,[char]0x05DC,[char]0x05DD,[char]0x05D5,[char]0x0021)) "Completed!"); $InstAppName.Text=(L (-join([char]0x05DB,[char]0x05DC,[char]0x0020,[char]0x05D4,[char]0x05EA,[char]0x05D5,[char]0x05DB,[char]0x05E0,[char]0x05D5,[char]0x05EA,[char]0x0020,[char]0x05D4,[char]0x05D5,[char]0x05EA,[char]0x05E7,[char]0x05E0,[char]0x05D5,[char]0x002E)) "All software installed.")
     $InstCount.Text="$total / $total"; $InstStatus.Text=(L (-join([char]0x05D1,[char]0x05D3,[char]0x05D5,[char]0x05E7,[char]0x0020,[char]0x05DC,[char]0x05D5,[char]0x05D2,[char]0x002E)) "Check log.")
+    if($script:BgStarted){ $InstStatus.Text=(L "האופטימיזציה רצה ברקע - אפשר להמשיך לעבוד כרגיל (הלוג: $($script:BgLogPath))" "Optimization is running in the background - keep working normally. Log: $($script:BgLogPath)"); $InstAppName.Text=(L "התוכנות הותקנו. האופטימיזציה ממשיכה ברקע." "Software installed. Optimization continues in the background.") }
     $PageTitle.Text=(L (-join([char]0x05D4,[char]0x05D5,[char]0x05E9,[char]0x05DC,[char]0x05DD,[char]0x05D5,[char]0x0021)) "Completed."); $PageDesc.Text=(L (-join([char]0x05DB,[char]0x05DC,[char]0x0020,[char]0x05D4,[char]0x05EA,[char]0x05D5,[char]0x05DB,[char]0x05E0,[char]0x05D5,[char]0x05EA,[char]0x05D4,[char]0x05D5,[char]0x05EA,[char]0x05E7,[char]0x05E0,[char]0x05D5,[char]0x002E)) "All software installed.")
     $BtnBack.IsEnabled=$true; $BtnNext.IsEnabled=$false
 }
