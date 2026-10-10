@@ -10,7 +10,7 @@ Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
 
 $script:isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $scriptPath = $MyInvocation.MyCommand.Path
-# If running via irm/iex, $scriptPath will be empty. We handle this gracefully.
+
 if (-not $scriptPath) {
     $script:scriptDir = $env:TEMP
 } else {
@@ -20,12 +20,11 @@ if (-not $scriptPath) {
 if (-not $script:isAdmin) {
     if ($scriptPath) {
         Start-Process powershell.exe -Verb RunAs -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", "`"$scriptPath`"") -WindowStyle Normal
-        exit
     } else {
-        Write-Warning "Running in-memory (irm | iex). Please run PowerShell as Administrator first!"
-        Write-Host "Example: Right-click PowerShell -> Run as Administrator, then paste your command." -ForegroundColor Cyan
-        exit
+        $remoteCmd = "irm https://raw.githubusercontent.com/dor2500/WinFlexOS-Optimizer/master/WinFlexSetupModern.ps1 | iex"
+        Start-Process powershell.exe -Verb RunAs -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-Command", $remoteCmd) -WindowStyle Normal
     }
+    exit
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms

@@ -12,7 +12,12 @@ Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     try {
-        Start-Process powershell.exe -ArgumentList ("-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"") -Verb RunAs -WindowStyle Normal
+        if ($PSCommandPath) {
+            Start-Process powershell.exe -ArgumentList ("-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"") -Verb RunAs -WindowStyle Normal
+        } else {
+            $remoteCmd = "irm https://raw.githubusercontent.com/dor2500/WinFlexOS-Optimizer/master/HardwareAuditAndPrivacy.ps1 | iex"
+            Start-Process powershell.exe -ArgumentList ("-NoProfile -ExecutionPolicy Bypass -Command `"$remoteCmd`"") -Verb RunAs -WindowStyle Normal
+        }
         exit
     } catch {
         Write-Host "[X] Could not elevate privileges. Please run PowerShell as Administrator manually." -ForegroundColor Red
