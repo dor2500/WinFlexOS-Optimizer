@@ -1,4 +1,4 @@
-﻿# WinFlexSetupModern.ps1 - V4.1 Design
+# WinFlexSetupModern.ps1 - V4.1 Design
 #Requires -Version 5.1
 
 param(
@@ -6,11 +6,9 @@ param(
     [string]$MenuPath
 )
 
-Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
-
 $script:isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $scriptPath = $MyInvocation.MyCommand.Path
-
+# If running via irm/iex, $scriptPath will be empty. We handle this gracefully.
 if (-not $scriptPath) {
     $script:scriptDir = $env:TEMP
 } else {
@@ -19,12 +17,14 @@ if (-not $scriptPath) {
 
 if (-not $script:isAdmin) {
     if ($scriptPath) {
-        Start-Process powershell.exe -Verb RunAs -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", "`"$scriptPath`"") -WindowStyle Normal
+        Write-Host "Elevating to Administrator..." -ForegroundColor Yellow
+        Start-Process powershell.exe -Verb RunAs -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", "`"$scriptPath`"")
+        exit
     } else {
-        $remoteCmd = "irm https://raw.githubusercontent.com/dor2500/WinFlexOS-Optimizer/master/WinFlexSetupModern.ps1 | iex"
-        Start-Process powershell.exe -Verb RunAs -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-Command", $remoteCmd) -WindowStyle Normal
+        Write-Warning "Running in-memory (irm | iex). Please run PowerShell as Administrator first!"
+        Write-Host "Example: Right-click PowerShell -> Run as Administrator, then paste your command." -ForegroundColor Cyan
+        exit
     }
-    exit
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
@@ -91,6 +91,7 @@ function Get-SystemHardwareAudit {
     $script:cpu = Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
     $baseboard = Get-CimInstance -ClassName Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
     $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+    $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue | Select-Object -First 1
     
     $ramSticks = Get-CimInstance -ClassName Win32_PhysicalMemory -ErrorAction SilentlyContinue
     $script:totalRamGB = [math]::Round((($ramSticks | Measure-Object -Property Capacity -Sum).Sum) / 1GB, 2)
@@ -101,383 +102,154 @@ function Get-SystemHardwareAudit {
     foreach ($d in $disks) {
         if ($d.MediaType -eq "SSD" -or $d.BusType -eq "NVMe") { $script:hasSSD = $true }
     }
-    
-    $auditText = "System: $osName (Build $($osInfo.BuildNumber)) - $formFactorName`n"
-    $auditText += "Model: $($computerSystem.Manufacturer) $($computerSystem.Model)`n"
-    $auditText += "CPU: $($script:cpu.Name)`n"
-    $auditText += "RAM: $($script:totalRamGB) GB`n"
-    if ($script:gpus) {
-        $auditText += "GPU(s): " + (($script:gpus | ForEach-Object { $_.Name }) -join ", ") + "`n"
-    }
-    $auditText += "SSD Detected: $script:hasSSD"
-    
-    return $auditText
-}
 
-function Invoke-ExtremeDebloat {
-    Write-Host "`n[*] Performing EXTREME System Debloat & Privacy Lock-Down..." -ForegroundColor Red
-    Start-Sleep -Seconds 1
-    
-    # 1. Telemetry Services
-    Write-Host " [~] Shredding Microsoft Telemetry Services..." -ForegroundColor DarkGray
-    $telemetryServices = @("DiagTrack", "dmwappushservice", "WerSvc", "WaaSMedicSvc")
-    foreach ($svc in $telemetryServices) {
-        Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-        Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
-    }
-    
-    # 2. Cortana & Web Search
-    Write-Host " [~] Nuking Cortana and Start Menu Web Search..." -ForegroundColor DarkGray
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "AllowCortana" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "DisableWebSearch" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableSearchBoxSuggestions" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-    
-    # 3. Privacy & Activity Tracking
-    Write-Host " [~] Disabling Location, Activity Timeline, and Ad ID..." -ForegroundColor DarkGray
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "EnableActivityFeed" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "PublishUserActivities" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" -Name "DisableLocation" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo" -Name "Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy" -Name "TailoredExperiencesWithDiagnosticDataEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    
-    # 4. Delivery Optimization
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    
-    # 5. Explorer Quality of Life (Show Extensions)
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    
-    # 6. SysMain (SuperFetch) for SSDs
-    if ($script:hasSSD) {
-        Write-Host " [~] SSD Detected: Disabling SysMain (SuperFetch)..." -ForegroundColor DarkGray
-        Stop-Service -Name "SysMain" -Force -ErrorAction SilentlyContinue
-        Set-Service -Name "SysMain" -StartupType Disabled -ErrorAction SilentlyContinue
-    }
-    
-    # 7. UWP Bloatware
-    Write-Host " [~] Purging UWP Bloatware Apps..." -ForegroundColor DarkGray
-    $bloatware = @(
-        "Microsoft.BingNews", "Microsoft.MicrosoftSolitaireCollection", "Microsoft.NetworkSpeedTest",
-        "Microsoft.SkypeApp", "Microsoft.WindowsFeedbackHub", "Microsoft.ZuneVideo", "Microsoft.ZuneMusic",
-        "SpotifyAB.SpotifyMusic", "Clipchamp.Clipchamp", "Microsoft.Todos", "Microsoft.YourPhone", "Microsoft.MixedReality.Portal", "Microsoft.GetHelp"
-    )
-    foreach ($app in $bloatware) {
-        Get-AppxPackage -Name "*$app*" -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
-    }
-    Start-Sleep -Seconds 1
-}
-
-function Invoke-ForensicDeepScan {
-    Write-Host "`n[*] ========================================================" -ForegroundColor Magenta
-    Write-Host "    🕵️ INITIATING FORENSIC DEEP SCAN (Estimated Time: 5-10 Minutes)" -ForegroundColor Red
-    Write-Host "==========================================================" -ForegroundColor Magenta
-    
-    $reportPath = Join-Path $env:USERPROFILE "Desktop\Forensic_System_Report.txt"
-    Write-Host "[!] A detailed forensic report will be saved to: $reportPath" -ForegroundColor Yellow
-    "========================================================" | Out-File $reportPath -Encoding utf8
-    " FORENSIC SYSTEM REPORT - $(Get-Date)" | Out-File $reportPath -Append -Encoding utf8
-    "========================================================" | Out-File $reportPath -Append -Encoding utf8
-    
-    # 1. Driver Forensic Scan
-    Write-Host "`n[~] 1/4 Scanning EVERY installed driver in the system..." -ForegroundColor Cyan
-    "--- DRIVER AUDIT ---" | Out-File $reportPath -Append -Encoding utf8
-    $drivers = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue
-    $totalDrivers = $drivers.Count
-    $dCount = 0
-    foreach ($drv in $drivers) {
-        $dCount++
-        if ($dCount % 5 -eq 0) { Write-Progress -Activity "Scanning Drivers" -Status "$dCount / $totalDrivers" -PercentComplete (($dCount/$totalDrivers)*100) }
-        $line = "Driver: $($drv.DeviceName) | Provider: $($drv.ProviderName) | Version: $($drv.DriverVersion) | Class: $($drv.DeviceClass) | Path: $($drv.Location)"
-        $line | Out-File $reportPath -Append -Encoding utf8
-    }
-    Write-Progress -Activity "Scanning Drivers" -Completed
-    Write-Host "    [✓] Scanned $totalDrivers active hardware drivers." -ForegroundColor Green
-    
-    # 2. Third Party / OEM Drivers (Driver Store)
-    Write-Host "[~] 2/4 Analyzing Driver Store (OEM & 3rd Party Registry)..." -ForegroundColor Cyan
-    "--- DRIVER STORE (OEM) ---" | Out-File $reportPath -Append -Encoding utf8
-    pnputil /enum-drivers | Out-File $reportPath -Append -Encoding utf8
-    
-    # 3. Deep Folder & EXTREME REGISTRY Scan (Background Job)
-    Write-Host "[~] 3/4 Launching Massive Registry & File Scan in the BACKGROUND..." -ForegroundColor Red
-    Write-Host "    [!] This runs in the background so the console won't freeze. You will see a spinner." -ForegroundColor Yellow
-    "--- FORENSIC REGISTRY & FILE SCAN ---" | Out-File $reportPath -Append -Encoding utf8
-    
-    $jobScript = {
-        $aiExts = @(".safetensors", ".pt", ".bin", ".onnx", ".gguf", ".ckpt")
-        $jnkExts = @(".tmp", ".log", ".dmp", ".bak")
-        $aiFiles = [System.Collections.Generic.List[string]]::new()
-        $junkSize = 0
-        
-        # Files
-        $tDirs = @("$env:USERPROFILE", "C:\ProgramData", "C:\Program Files", "C:\Program Files (x86)")
-        foreach ($d in $tDirs) {
-            if (Test-Path $d) {
-                $files = Get-ChildItem -Path $d -File -Recurse -Force -ErrorAction SilentlyContinue
-                foreach ($f in $files) {
-                    if ($aiExts -contains $f.Extension) { $aiFiles.Add("$($f.FullName) ($([math]::Round($f.Length/1MB, 2)) MB)") }
-                    if ($jnkExts -contains $f.Extension) { $junkSize += $f.Length }
-                }
-            }
+    if ($null -ne $AuditTerminalText -and $AuditTerminalText.Inlines.Count -eq 0) {
+        $AuditTerminalText.Inlines.Clear()
+        function Add-ColorText([string]$text, [string]$color) {
+            $run = New-Object System.Windows.Documents.Run
+            $run.Text = $text
+            $run.Foreground = (New-Object System.Windows.Media.BrushConverter).ConvertFromString($color)
+            $AuditTerminalText.Inlines.Add($run) | Out-Null
         }
         
-        # Deep Recursive Registry Scan
-        $suspiciousKeys = [System.Collections.Generic.List[string]]::new()
-        $terms = @(
-            "Telemetry", "Tracking", "Advertising", "Cortana", "DiagTrack",
-            "GameDVR", "OneDrive", "Skype", "MixedReality", "YourPhone",
-            "NewsAndInterests", "Widgets", "MapsBroker", "PeopleExperienceHost",
-            "EdgePrelaunch", "PrintSpooler", "Fax"
-        )
-        $hives = @("HKCU:\Software", "HKLM:\SOFTWARE")
-        foreach ($hive in $hives) {
-            $allKeys = Get-ChildItem -Path $hive -Recurse -ErrorAction SilentlyContinue
-            foreach ($k in $allKeys) {
-                foreach ($t in $terms) {
-                    if ($k.Name -match $t) {
-                        $suspiciousKeys.Add("Found Bloat/Tracker Key ($t): $($k.Name)")
-                        break
-                    }
-                }
-            }
+        Add-ColorText "[ Smart Hardware Optimization & Profile customization ]`n" "#00FF00"
+        Add-ColorText "-------------------------------------------------------`n`n" "#888888"
+
+        Add-ColorText "Phase 1: Comprehensive System & Hardware Audit`n" "#FF00FF"
+
+        Add-ColorText "`n[+] Detected System Configuration: $formFactorName`n" "#00FFFF"
+        Add-ColorText "  * Operating System: $osName (Build $($osInfo.BuildNumber))`n" "#AAAAAA"
+        Add-ColorText "  * Manufacturer & Model: $($computerSystem.Manufacturer) $($computerSystem.Model)`n" "#AAAAAA"
+        Add-ColorText "  * Motherboard: $($baseboard.Manufacturer) $($baseboard.Product) (BIOS: $($bios.SMBIOSBIOSVersion))`n`n" "#AAAAAA"
+        
+        Add-ColorText "* CPU: $($script:cpu.Name)`n" "#00FF00"
+        Add-ColorText "  - $($script:cpu.NumberOfCores) Cores / $($script:cpu.NumberOfLogicalProcessors) Threads | Base Clock: $($script:cpu.MaxClockSpeed) MHz`n`n" "#888888"
+        
+        Add-ColorText "* RAM: $($script:totalRamGB) GB Installed`n" "#00FF00"
+        $stickIdx = 1
+        foreach ($stick in $ramSticks) {
+            $stickGb = [math]::Round($stick.Capacity / 1GB, 1)
+            Add-ColorText "  - Stick $($stickIdx): $stickGb GB | Speed: $($stick.ConfiguredClockSpeed) MHz (Maker: $($stick.Manufacturer))`n" "#888888"
+            $stickIdx++
         }
         
-        return @{ Ai = $aiFiles; Junk = $junkSize; Reg = $suspiciousKeys }
-    }
-    
-    $job = Start-Job -ScriptBlock $jobScript
-    $spinner = @('|', '/', '-', '\')
-    $c = 0
-    while ($job.State -eq 'Running') {
-        Write-Host -NoNewline "`r    $($spinner[$c % 4]) Deep Scanning Registry & Files... (Running in Background)" -ForegroundColor Cyan
-        $c++
-        Start-Sleep -Milliseconds 100
-    }
-    Write-Host "`r    [✓] Background Registry & File Scan Completed!                     " -ForegroundColor Green
-    
-    $jobRes = Receive-Job -Job $job
-    Remove-Job -Job $job
-    
-    $aiFiles = $jobRes.Ai
-    $junkSize = $jobRes.Junk
-    $suspiciousKeys = $jobRes.Reg
-    
-    # 4. Applications and Packages
-    Write-Host "[~] 4/4 Extracting all installed software & deep Appx packages..." -ForegroundColor Cyan
-    "--- INSTALLED SOFTWARE ---" | Out-File $reportPath -Append -Encoding utf8
-    Get-ItemProperty HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue | Select-Object DisplayName, DisplayVersion, InstallLocation | Out-File $reportPath -Append -Encoding utf8
-    Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue | Select-Object DisplayName, DisplayVersion, InstallLocation | Out-File $reportPath -Append -Encoding utf8
-    
-    "--- UWP APPX PACKAGES ---" | Out-File $reportPath -Append -Encoding utf8
-    Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Select-Object Name, PackageFullName, InstallLocation | Out-File $reportPath -Append -Encoding utf8
-    
-    # Finalize Report
-    "--- SCAN SUMMARY ---" | Out-File $reportPath -Append -Encoding utf8
-    "Total Drivers Audited: $totalDrivers" | Out-File $reportPath -Append -Encoding utf8
-    
-    "Found Suspicious Registry Keys ($($suspiciousKeys.Count)):" | Out-File $reportPath -Append -Encoding utf8
-    foreach ($sk in $suspiciousKeys) { $sk | Out-File $reportPath -Append -Encoding utf8 }
-    
-    "Identified AI/ML Model Files ($($aiFiles.Count)):" | Out-File $reportPath -Append -Encoding utf8
-    foreach ($ai in $aiFiles) { $ai | Out-File $reportPath -Append -Encoding utf8 }
-    "Total Identifiable Junk/Temp/Dump Size: $([math]::Round($junkSize/1GB, 2)) GB" | Out-File $reportPath -Append -Encoding utf8
-    
-    Write-Host "`n[+] FORENSIC SCAN COMPLETE!" -ForegroundColor Green
-    Write-Host "    - Found $($suspiciousKeys.Count) telemetry/tracking keys in the Registry." -ForegroundColor Green
-    Write-Host "    - Found $($aiFiles.Count) AI Models / Weights on disk." -ForegroundColor Green
-    Write-Host "    - Found $([math]::Round($junkSize/1GB, 2)) GB of Temp/Log/Dump Junk files." -ForegroundColor Green
-    Write-Host "    - Full detailed report saved to: $reportPath" -ForegroundColor Yellow
-    
-    Start-Sleep -Seconds 5
-}
+        Add-ColorText "`n* GPU(s):`n" "#00FF00"
+        foreach ($gpu in $script:gpus) { 
+            $vram = if ($gpu.AdapterRAM -gt 0) { "$([math]::Round($gpu.AdapterRAM / 1GB, 2)) GB VRAM" } else { "Shared RAM" }
+            Add-ColorText "  - $($gpu.Name) [$vram] (Driver: $($gpu.DriverVersion))`n" "#00AAAA"
+        }
+        
+        Add-ColorText "`n* Storage:`n" "#00FF00"
+        foreach ($d in $disks) {
+            Add-ColorText "  - $($d.FriendlyName) : $([math]::Round($d.Size / 1GB, 1)) GB | Media: $($d.MediaType) $($d.BusType)`n" "#888888"
+        }
+        
+        Add-ColorText "`n* Disk Health (S.M.A.R.T):`n" "#00FF00"
+        foreach ($pd in $disks) {
+            $health = if ($pd.HealthStatus -eq "Healthy") { "[Healthy]" } else { "[WARNING]" }
+            Add-ColorText "  - $($pd.FriendlyName): $health (Status: $($pd.OperationalStatus))`n" "#AAAAAA"
+        }
+        
+        Add-ColorText "`n* Network Interfaces & Latency:`n" "#00FF00"
+        $nics = Get-NetAdapter | Where-Object { $_.Status -eq "Up" } -ErrorAction SilentlyContinue
+        foreach ($nic in $nics) {
+            Add-ColorText "  - $($nic.Name) ($($nic.InterfaceDescription)) - Link: $($nic.LinkSpeed)`n" "#AAAAAA"
+        }
+        $ping = Test-Connection -ComputerName 8.8.8.8 -Count 1 -ErrorAction SilentlyContinue
+        if ($ping) { Add-ColorText "  - Internet Ping (8.8.8.8): $($ping.ResponseTime) ms`n" "#00FFFF" }
 
-# ===== PORTED FROM HardwareAuditAndPrivacy.ps1 (GUI-friendly: output goes to log + Desktop report) =====
-function Invoke-HardwareAuditReport {
-    if ($null -eq $script:hasSSD) { Get-SystemHardwareAudit | Out-Null }
-    $reportPath = Join-Path $env:USERPROFILE "Desktop\Hardware_Audit_Report.txt"
-    $r = New-Object System.Collections.Generic.List[string]
-    $r.Add("HARDWARE AUDIT REPORT - $(Get-Date)")
-    $r.Add("==========================================")
-    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-    $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-    $bb = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
-    $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue | Select-Object -First 1
-    $r.Add("OS: $($os.Caption) (Build $($os.BuildNumber))  |  Form factor: $(if($script:IsLaptop){'Laptop'}else{'Desktop'})")
-    $r.Add("Model: $($cs.Manufacturer) - $($cs.Model)")
-    $r.Add("Motherboard: $($bb.Manufacturer) $($bb.Product) (BIOS: $($bios.SMBIOSBIOSVersion))")
-    $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
-    $r.Add("CPU: $($cpu.Name) - $($cpu.NumberOfCores) Cores / $($cpu.NumberOfLogicalProcessors) Threads | $($cpu.MaxClockSpeed) MHz | Virtualization: $($cpu.VirtualizationFirmwareEnabled)")
-    $sticks = Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue
-    $r.Add("RAM: $($script:totalRamGB) GB")
-    $n = 1; foreach ($s in $sticks) { $r.Add("  - Stick $($n): $([math]::Round($s.Capacity/1GB,1)) GB @ $($s.ConfiguredClockSpeed) MHz ($($s.Manufacturer))"); $n++ }
-    $r.Add("GPU(s):")
-    foreach ($g in (Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)) {
-        $vram = if ($g.AdapterRAM -gt 0) { "$([math]::Round($g.AdapterRAM/1GB,2)) GB VRAM" } else { "Shared RAM" }
-        $r.Add("  - $($g.Name) [$vram] Driver: $($g.DriverVersion)")
+        Add-ColorText "`n-------------------------------------------------------`n" "#888888"
+        Add-ColorText "Phase 2: Define Usage Profile (Customization)`n" "#FF00FF"
+        Add-ColorText "What is the primary use case for this PC? (Select a number):`n" "#AAAAAA"
+        
+        Add-ColorText "[1] Gaming" "#00FFFF"
+        Add-ColorText " - Max performance, zero mouse accel, lower network latency.`n" "#AAAAAA"
+        Add-ColorText "[2] Office & Browsing" "#00FFFF"
+        Add-ColorText " - Stability, power saving, bloatware removal.`n" "#AAAAAA"
+        Add-ColorText "[3] Content Creation" "#00FFFF"
+        Add-ColorText " - Maximize stable resources for rendering/production.`n" "#AAAAAA"
+        Add-ColorText "[4] AI & Machine Learning" "#00FFFF"
+        Add-ColorText " - Deep system scan, max RAM/VRAM utilization, Long Paths.`n" "#AAAAAA"
+        Add-ColorText "[5] Forensic Deep Scan" "#00FFFF"
+        Add-ColorText " - (Driver & Targeted Folder Analysis) - ~5-10 Minutes`n" "#AAAAAA"
+        Add-ColorText "[6] UNDO" "#00FFFF"
+        Add-ColorText " - Revert all optimizations to Windows defaults.`n" "#AAAAAA"
+        Add-ColorText "[7] Ultimate Debloat" "#00FFFF"
+        Add-ColorText " - Extreme telemetry removal, disable Defender, remove Edge.`n" "#AAAAAA"
+        Add-ColorText "[8] Privacy Shield" "#00FFFF"
+        Add-ColorText " - Block all tracking, disable Cortana, spoof telemetry.`n" "#AAAAAA"
+        Add-ColorText "[9] Laptop Battery Saver" "#00FFFF"
+        Add-ColorText " - Underclock CPU, max power saving, disable background sync.`n" "#AAAAAA"
+        Add-ColorText "[10] Network Supercharger" "#00FFFF"
+        Add-ColorText " - Optimize TCP/IP stack, flush DNS, prioritize gaming packets.`n" "#AAAAAA"
+        Add-ColorText "[11] Nuclear Ultra-Deep Debloat" "#FF0055"
+        Add-ColorText " - Extreme background stripping of Edge, Copilot, Widgets & telemetry.`n" "#AAAAAA"
+        Add-ColorText "[12] Deep System Cleanup" "#FFD700"
+        Add-ColorText " - Clean Windows Update cache, crash dumps, temp files, and SSD TRIM.`n" "#AAAAAA"
+        Add-ColorText "[13] Security & Privacy Hardening" "#00FF66"
+        Add-ColorText " - Disable WPAD, remote assistance, and lock screen privacy exposure.`n" "#AAAAAA"
     }
-    $r.Add("Storage / Health (S.M.A.R.T):")
-    foreach ($d in (Get-PhysicalDisk -ErrorAction SilentlyContinue)) {
-        $h = if ($d.HealthStatus -eq "Healthy") { "[Healthy]" } else { "[WARNING]" }
-        $r.Add("  - $($d.FriendlyName): $([math]::Round($d.Size/1GB,1)) GB | $($d.MediaType) $($d.BusType) | $h ($($d.OperationalStatus))")
-    }
-    $r.Add("Network:")
-    foreach ($nic in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Up" })) {
-        $r.Add("  - $($nic.Name) ($($nic.InterfaceDescription)) Link: $($nic.LinkSpeed)")
-    }
-    try { $p = Test-Connection -ComputerName 8.8.8.8 -Count 1 -ErrorAction Stop; $ms = if ($p.ResponseTime) { $p.ResponseTime } else { $p.Latency }; $r.Add("  - Ping 8.8.8.8: $ms ms") } catch { $r.Add("  - Ping 8.8.8.8: failed") }
-    $r | Out-File $reportPath -Encoding utf8
-    foreach ($line in $r) { Write-Log $line }
-    Write-Log "Hardware audit report saved to: $reportPath"
 }
-
-function Invoke-RestorePointSafe {
-    try {
-        Enable-ComputerRestore -Drive "C:\" -ErrorAction SilentlyContinue | Out-Null
-        Checkpoint-Computer -Description "WinFlexOS - Before tweaks" -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop
-        Write-Log "Restore point created."
-    } catch { Write-Log "Restore point skipped: $($_.Exception.Message)" }
-}
-
-function Invoke-PrivacyLockdown {
-    foreach ($svc in @("DiagTrack", "dmwappushservice", "WerSvc")) {
-        Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-        Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
-    }
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "AllowCortana" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "DisableWebSearch" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-    New-Item -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableSearchBoxSuggestions" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "EnableActivityFeed" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "PublishUserActivities" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" -Name "DisableLocation" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo" -Name "Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy" -Name "TailoredExperiencesWithDiagnosticDataEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    Write-Log "Privacy lock-down applied (telemetry, Cortana/web search, activity, location, ad ID, delivery optimization)."
-}
-
-function Invoke-BloatRemoval {
-    $bloatware = @(
-        "Microsoft.BingNews", "Microsoft.MicrosoftSolitaireCollection", "Microsoft.NetworkSpeedTest",
-        "Microsoft.SkypeApp", "Microsoft.WindowsFeedbackHub", "Microsoft.ZuneVideo", "Microsoft.ZuneMusic",
-        "SpotifyAB.SpotifyMusic", "Clipchamp.Clipchamp", "Microsoft.Todos", "Microsoft.YourPhone", "Microsoft.MixedReality.Portal", "Microsoft.GetHelp"
-    )
-    foreach ($app in $bloatware) {
-        Get-AppxPackage -Name "*$app*" -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
-    }
-    Write-Log "Bloatware UWP apps removed."
-}
-
-function Invoke-NetworkLatencyTune {
-    try { netsh int tcp set global heuristics=disabled | Out-Null; netsh int tcp set global autotuninglevel=normal | Out-Null } catch {}
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 0xFFFFFFFF -Type DWord -Force -ErrorAction SilentlyContinue
-    Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match "Large Send Offload" } | Set-NetAdapterAdvancedProperty -RegistryValue "0" -ErrorAction SilentlyContinue
-    Write-Log "Network tuned: TCP heuristics off, throttling removed, LSO disabled."
-}
-
-function Invoke-UndoTweaks {
-    foreach ($svc in @("DiagTrack", "dmwappushservice", "WerSvc")) { Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue }
-    Remove-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableSearchBoxSuggestions" -Force -ErrorAction SilentlyContinue
-    Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -Force -ErrorAction SilentlyContinue
-    Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "DisableWebSearch" -Force -ErrorAction SilentlyContinue
-    Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "AllowCortana" -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 10 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 20 -Type DWord -Force -ErrorAction SilentlyContinue
-    netsh int tcp set global heuristics=enabled | Out-Null
-    netsh int tcp set global autotuninglevel=normal | Out-Null
-    bcdedit /deletevalue disabledynamictick 2>$null | Out-Null
-    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "1" -Type String -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -Value "6" -Type String -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -Value "10" -Type String -Force -ErrorAction SilentlyContinue
-    powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e
-    Write-Log "UNDO complete: defaults restored (services, search, gaming, network, mouse, power plan)."
-}
-# ===== END PORTED FUNCTIONS =====
 
 function Invoke-SystemTweak($tweakId) {
     if ($null -eq $script:hasSSD) { Get-SystemHardwareAudit | Out-Null }
-    
+
+    $auditScriptPath = Join-Path $script:scriptDir "HardwareAuditAndPrivacy.ps1"
+    if (-not (Test-Path -LiteralPath $auditScriptPath)) {
+        $auditScriptPath = Join-Path $PSScriptRoot "HardwareAuditAndPrivacy.ps1"
+    }
+
+    # Route Audit Profiles to the enhanced transparent engine
+    if ($tweakId -match "^AuditProfile(\d+)$") {
+        $pNum = $matches[1]
+        Write-Log "Executing Profile $pNum with live transparency & HTML report generation..."
+        if (Test-Path -LiteralPath $auditScriptPath) {
+            $p = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$auditScriptPath`"", "-ProfileId", "$pNum", "-Silent", "-NoPause", "-OpenReport") -PassThru -Wait -NoNewWindow
+            Write-Log "Profile $pNum finished with exit code $($p.ExitCode)"
+        } else {
+            $cmd = "irm https://raw.githubusercontent.com/dor2500/WinFlexOS-Optimizer/master/HardwareAuditAndPrivacy.ps1 | iex; Start-WFOptimization -SelectedProfiles @('$pNum')"
+            Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $cmd) -Wait -NoNewWindow
+        }
+        return
+    }
+
     switch ($tweakId) {
+        "NuclearDebloat" {
+            Invoke-SystemTweak "AuditProfile11"
+        }
+        "SecurityHardening" {
+            Invoke-SystemTweak "AuditProfile13"
+        }
+        "GenerateHtmlReport" {
+            Write-Log "Generating HTML System Report on Desktop..."
+            if (Test-Path -LiteralPath $auditScriptPath) {
+                Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$auditScriptPath`"", "-DryRun", "-ProfileId", "11", "-Silent", "-NoPause", "-OpenReport") -Wait -NoNewWindow
+            }
+        }
         "ExtremeDebloat" {
-            Invoke-ExtremeDebloat
-        }
-        "HardwareAudit" { Invoke-HardwareAuditReport }
-        "RestorePoint"  { Invoke-RestorePointSafe }
-        "PrivacyLock"   { Invoke-PrivacyLockdown }
-        "BloatRemoval"  { Invoke-BloatRemoval }
-        "NetworkTune"   { Invoke-NetworkLatencyTune }
-        "UndoAll"       { Invoke-UndoTweaks }
-        "AuditProfile1" { Invoke-ExtremeDebloat; Invoke-RestorePointSafe; Invoke-SystemTweak "SSDOptimize"; Invoke-SystemTweak "ProfileGaming" }
-        "AuditProfile2" { Invoke-ExtremeDebloat; Invoke-RestorePointSafe; Invoke-SystemTweak "SSDOptimize"; Invoke-SystemTweak "ProfileOffice" }
-        "AuditProfile3" { Invoke-ExtremeDebloat; Invoke-RestorePointSafe; Invoke-SystemTweak "SSDOptimize"; Invoke-SystemTweak "ProfileCreator" }
-        "AuditProfile4" { Invoke-ExtremeDebloat; Invoke-RestorePointSafe; Invoke-SystemTweak "SSDOptimize"; Invoke-SystemTweak "ProfileAI" }
-        "AuditProfile5" { Invoke-ForensicDeepScan }
-        "AuditProfile6" { Invoke-UndoTweaks }
-        "ClearTemp" {
-            foreach ($p in @($env:TEMP, "$env:SystemRoot\Temp", "$env:LOCALAPPDATA\Microsoft\Windows\INetCache", "$env:LOCALAPPDATA\CrashDumps")) {
-                if (Test-Path $p) { Get-ChildItem -Path $p -Force -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notlike "*winflex*" } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
-            }
-            Clear-RecycleBin -Force -ErrorAction SilentlyContinue
-            Remove-Item "$env:LOCALAPPDATA\Microsoft\Windows\Explorer\thumbcache_*.db" -Force -ErrorAction SilentlyContinue
-            Write-Log "Temp files, caches, crash dumps and Recycle Bin cleaned."
-        }
-        "ShowHiddenFiles" {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "Hidden" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            Write-Log "Explorer: hidden files and file extensions are now visible (applies on next Explorer restart/sign-in)."
-        }
-        "DarkMode" {
-            $k = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-            Set-ItemProperty -Path $k -Name "AppsUseLightTheme" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path $k -Name "SystemUsesLightTheme" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            Write-Log "Windows dark mode enabled."
-        }
-        "ClassicContextMenu" {
-            New-Item -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" -Name "(default)" -Value "" -Force -ErrorAction SilentlyContinue
-            Write-Log "Classic (full) right-click menu enabled for Windows 11 (applies after sign-out/restart)."
-        }
-        "DisableCopilot" {
-            New-Item -Path "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" -Name "TurnOffWindowsCopilot" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" -Name "TurnOffWindowsCopilot" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            Write-Log "Windows Copilot disabled by policy."
-        }
-        "NoConsumerContent" {
-            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Name "DisableWindowsConsumerFeatures" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Name "DisableSoftLanding" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            $cdm = "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
-            foreach ($n in @("SubscribedContent-338388Enabled","SubscribedContent-338389Enabled","SubscribedContent-353694Enabled","SubscribedContent-353696Enabled","SilentInstalledAppsEnabled","SystemPaneSuggestionsEnabled","SoftLandingEnabled","RotatingLockScreenOverlayEnabled")) {
-                Set-ItemProperty -Path $cdm -Name $n -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            }
-            Write-Log "Consumer content, app suggestions and silent app installs disabled."
-        }
-        "NetworkReset" {
-            ipconfig /flushdns | Out-Null
-            netsh winsock reset | Out-Null
-            netsh int ip reset | Out-Null
-            Write-Log "DNS cache flushed; Winsock and TCP/IP stack reset (restart recommended)."
-        }
-        "CleanupWinUpdate" {
-            Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
-            Remove-Item "$env:SystemRoot\SoftwareDistribution\Download\*" -Recurse -Force -ErrorAction SilentlyContinue
-            Start-Service -Name wuauserv -ErrorAction SilentlyContinue
-            Dism.exe /Online /Cleanup-Image /StartComponentCleanup | Out-Null
-            Write-Log "Windows Update download cache and component store cleaned."
+            Invoke-SystemTweak "AuditProfile7"
         }
         "ForensicScan" {
-            Invoke-ForensicDeepScan
+            Invoke-SystemTweak "AuditProfile5"
+        }
+        "DeepDebloat" {
+            $telemetryServices = @("DiagTrack", "dmwappushservice", "WerSvc")
+            foreach ($svc in $telemetryServices) {
+                Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+                Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+            }
+            New-Item -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableSearchBoxSuggestions" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            $bloatware = @(
+                "Microsoft.BingNews", "Microsoft.MicrosoftSolitaireCollection", "Microsoft.NetworkSpeedTest",
+                "Microsoft.SkypeApp", "Microsoft.WindowsFeedbackHub", "Microsoft.ZuneVideo", "Microsoft.ZuneMusic",
+                "SpotifyAB.SpotifyMusic", "Clipchamp.Clipchamp", "Microsoft.Todos", "Microsoft.YourPhone"
+            )
+            foreach ($app in $bloatware) {
+                Get-AppxPackage -Name "*$app*" -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+            }
         }
         "ProfileGaming" {
             Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
@@ -508,7 +280,6 @@ function Invoke-SystemTweak($tweakId) {
             if (-not $script:IsLaptop) { powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c }
         }
         "ProfileAI" {
-            # AI & MACHINE LEARNING
             Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
             Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
             Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 10 -Type DWord -Force -ErrorAction SilentlyContinue
@@ -518,33 +289,6 @@ function Invoke-SystemTweak($tweakId) {
                 if ($uGuid -match "([A-Fa-f0-9\-]{36})") { powercfg -setactive $matches[1] } else { powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c }
             }
             Write-Log "AI Profile applied: Long Paths, Ultimate Power, System Responsiveness adjusted."
-            
-            # Massive AI Scan in Log
-            Write-Log "--- MASSIVE AI SYSTEM DIAGNOSTIC ---"
-            $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-            Write-Log "CPU: $($cpu.Name) | Cores: $($cpu.NumberOfCores) | Threads: $($cpu.NumberOfLogicalProcessors) | L3: $($cpu.L3CacheSize)MB"
-            $mem = Get-CimInstance Win32_PhysicalMemory
-            $totalMem = [math]::Round((($mem | Measure-Object -Property Capacity -Sum).Sum) / 1GB, 2)
-            Write-Log "RAM: $totalMem GB"
-            $nvSmi = (Get-Command "nvidia-smi" -ErrorAction SilentlyContinue).Source
-            if ($nvSmi) {
-                try {
-                    $smiOut = & $nvSmi --query-gpu=name,memory.total,memory.free,temperature.gpu,utilization.gpu --format=csv,noheader
-                    Write-Log "NVIDIA: $smiOut"
-                } catch {}
-            }
-            $disks = Get-CimInstance Win32_LogicalDisk | Where-Object DriveType -eq 3
-            foreach ($d in $disks) {
-                $free = [math]::Round($d.FreeSpace / 1GB, 1)
-                $tot = [math]::Round($d.Size / 1GB, 1)
-                Write-Log "Drive $($d.DeviceID) | Free: $free GB / $tot GB"
-            }
-            $tools = @("python", "git", "docker", "wsl", "ollama", "node", "cmake", "conda", "nvcc")
-            foreach ($tool in $tools) {
-                $path = (Get-Command $tool -ErrorAction SilentlyContinue).Source
-                if ($path) { Write-Log "Found $tool at $path" } else { Write-Log "$tool not found" }
-            }
-            Write-Log "--- END DIAGNOSTIC ---"
         }
         "SSDOptimize" {
             if ($script:hasSSD) {
@@ -631,14 +375,13 @@ $xaml = @"
           <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.55"/></Trigger>
         </ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
     <Style x:Key="SidebarBtn" TargetType="Button"><Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{DynamicResource ThemeSub}"/>
-      <Setter Property="Height" Value="40"/><Setter Property="FontSize" Value="14"/><Setter Property="Margin" Value="4,0"/><Setter Property="Padding" Value="16,0"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Height" Value="44"/><Setter Property="FontSize" Value="15"/><Setter Property="Margin" Value="10,4"/><Setter Property="Padding" Value="16,0"/><Setter Property="Cursor" Value="Arrow"/>
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="20" Padding="{TemplateBinding Padding}">
+        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="12" Padding="{TemplateBinding Padding}">
           <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <TextBlock x:Name="Ic" Grid.Column="0" FontFamily="Segoe MDL2 Assets" FontSize="16" Text="{TemplateBinding Tag}" Foreground="{TemplateBinding Foreground}" VerticalAlignment="Center" Margin="0,0,8,0"/>
-            <ContentPresenter Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Center"/></Grid></Border>
+            <TextBlock x:Name="Ic" Grid.Column="0" FontFamily="Segoe MDL2 Assets" FontSize="16" Text="{TemplateBinding Tag}" Foreground="{TemplateBinding Foreground}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+            <ContentPresenter Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Left"/></Grid></Border>
         <ControlTemplate.Triggers>
-          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="{DynamicResource ThemeCard}"/><Setter Property="Foreground" Value="{DynamicResource ThemeFg}"/></Trigger>
         </ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
   </Window.Resources>
   <Grid>
@@ -669,24 +412,34 @@ $xaml = @"
       <Image x:Name="BgImage" Stretch="UniformToFill" Opacity="0.1"/>
     </Grid>
     <Border x:Name="MainBorder" Background="{DynamicResource ThemeBg}" CornerRadius="{StaticResource Rxl}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" Margin="30,20" Effect="{StaticResource CardShadow}" Visibility="Collapsed" MaxWidth="1200" MaxHeight="850">
-      <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-        <Border Grid.Row="0" Background="{DynamicResource ThemeSidebar}" CornerRadius="22,22,0,0" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,0,0,1">
-          <Grid Margin="20,15"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,30,0">
-               <TextBlock x:Name="SideSub" Visibility="Collapsed"/><TextBlock x:Name="SideFooter" Visibility="Collapsed"/>
+      <Border.LayoutTransform><ScaleTransform ScaleX="1.25" ScaleY="1.25"/></Border.LayoutTransform>
+      <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="260"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <Border Grid.Column="0" Background="{DynamicResource ThemeSidebar}" CornerRadius="22,0,0,22" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,0,1,0">
+          <Grid>
+             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+             <StackPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="30,40,30,30" HorizontalAlignment="Center">
                <Border Width="36" Height="36" CornerRadius="10" Background="{DynamicResource ThemeAccent}" HorizontalAlignment="Center" Margin="0,0,10,0" Effect="{StaticResource SoftGlow}">
                  <TextBlock Text="&#xE7F4;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
                <TextBlock FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center"><Run Text="Win" Foreground="White"/><Run Text="Flex" Foreground="{DynamicResource ThemeAccent}"/><Run Text="OS" Foreground="White"/></TextBlock></StackPanel>
-            <ScrollViewer Grid.Column="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" VerticalAlignment="Center" Margin="0,0,20,0">
-              <StackPanel x:Name="SideMenu" Orientation="Horizontal"/></ScrollViewer>
-            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-              <ComboBox x:Name="CmbTheme" Width="170" Height="30" Margin="0,0,8,0" Padding="8,4"/>
-              <Button x:Name="BtnLang" Content="EN" Margin="0,0,4,0" Width="40" Height="30" FontSize="12" Foreground="{DynamicResource ThemeSub}" Background="Transparent" BorderThickness="0" Cursor="Hand"/>
-              <Button x:Name="BtnMute" Content="Mute" Margin="0,0,4,0" Width="40" Height="30" FontSize="12" Foreground="{DynamicResource ThemeSub}" Background="Transparent" BorderThickness="0" Cursor="Hand"/>
+             <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Margin="0,0,0,20">
+               <StackPanel x:Name="SideMenu" Orientation="Vertical"/></ScrollViewer>
+             <StackPanel Grid.Row="2" Margin="20,0,20,30">
+               <TextBlock x:Name="SideSub" Visibility="Collapsed"/><TextBlock x:Name="SideFooter" Visibility="Collapsed"/>
+               <ComboBox x:Name="CmbTheme" Height="30" Margin="0,0,0,15" Padding="8,4"/>
+               <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                 <Button x:Name="BtnLang" Content="EN" Margin="0,0,8,0" Width="40" Height="30" FontSize="12" Foreground="{DynamicResource ThemeSub}" Background="Transparent" BorderThickness="0" Cursor="Hand"/>
+                 <Button x:Name="BtnMute" Content="Mute" Width="40" Height="30" FontSize="12" Foreground="{DynamicResource ThemeSub}" Background="Transparent" BorderThickness="0" Cursor="Hand"/>
+               </StackPanel>
+             </StackPanel>
+          </Grid>
+        </Border>
+        <Grid Grid.Column="1">
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,15,15,0" Panel.ZIndex="10">
               <Button x:Name="BtnMin" Content="&#xE921;" Style="{StaticResource WinCtrlBtn}" Width="30" Height="30" FontSize="10"/>
               <Button x:Name="BtnMax" Content="&#xE922;" Style="{StaticResource WinCtrlBtn}" Width="30" Height="30" FontSize="10"/>
-              <Button x:Name="BtnClose" Content="&#xE8BB;" Style="{StaticResource CloseBtn}" Width="30" Height="30" FontSize="10"/></StackPanel></Grid></Border>
-        <Grid x:Name="MainArea" Grid.Row="1" Margin="30,20" IsEnabled="False" Opacity="0.6">
+              <Button x:Name="BtnClose" Content="&#xE8BB;" Style="{StaticResource CloseBtn}" Width="30" Height="30" FontSize="10"/></StackPanel>
+          <Grid x:Name="MainArea" Grid.Row="1" Margin="30,20,30,20" IsEnabled="False" Opacity="0.6">
            <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
              <Grid Grid.Row="0" Margin="0,0,0,20"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                <StackPanel><TextBlock x:Name="TopTitle" Visibility="Collapsed"/><TextBlock x:Name="TopSub" Visibility="Collapsed"/>
@@ -699,14 +452,13 @@ $xaml = @"
                  <Border x:Name="SearchBoxBorder" Grid.Row="0" Background="{DynamicResource ThemeCard}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="10" Margin="0,0,0,16" Padding="12,8" Visibility="Collapsed">
                    <DockPanel><TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" Foreground="{DynamicResource ThemeSub}" VerticalAlignment="Center" Margin="5,0,12,0" FontSize="16"/>
                      <TextBox x:Name="TxtSearch" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource ThemeFg}" VerticalContentAlignment="Center" FontSize="15" CaretBrush="{DynamicResource ThemeAccent}"/></DockPanel></Border>
-                 <StackPanel Grid.Row="1">
-                  
-                  <Border x:Name="InternetBanner" Background="#14202B" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="{StaticResource Rm}" Padding="16" Margin="0,0,0,16" Visibility="Collapsed">
+                 <Border x:Name="InternetBanner" Grid.Row="1" Background="#14202B" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="{StaticResource Rm}" Padding="16" Margin="0,0,0,16" Visibility="Collapsed">
                    <DockPanel><ProgressBar IsIndeterminate="True" Width="140" Height="8" Margin="0,0,16,0" DockPanel.Dock="Left"/>
-                     <TextBlock x:Name="InternetText" Text="Waiting..." Foreground="{DynamicResource ThemeFg}" VerticalAlignment="Center" FontSize="14"/></DockPanel></Border></StackPanel>
+                     <TextBlock x:Name="InternetText" Text="Waiting..." Foreground="{DynamicResource ThemeFg}" VerticalAlignment="Center" FontSize="14"/></DockPanel></Border>
                  <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
-                   <ItemsControl x:Name="ItemsList">
-                     <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel Orientation="Horizontal" ItemWidth="280" ItemHeight="90"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                   <StackPanel>
+                     <ItemsControl x:Name="ItemsList">
+                       <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel Orientation="Horizontal" ItemWidth="280" ItemHeight="90"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
                      <ItemsControl.ItemTemplate><DataTemplate>
                          <CheckBox IsChecked="{Binding Selected}" Focusable="False" Margin="6" Cursor="Hand">
                            <CheckBox.Template><ControlTemplate TargetType="CheckBox">
@@ -722,8 +474,8 @@ $xaml = @"
                                  <Trigger Property="IsChecked" Value="True"><Setter TargetName="ToggleBg" Property="Background" Value="{DynamicResource ThemeAccent}"/><Setter TargetName="ToggleBg" Property="BorderBrush" Value="{DynamicResource ThemeAccent}"/><Setter TargetName="ToggleKnob" Property="Fill" Value="White"/><Setter TargetName="ToggleKnob" Property="HorizontalAlignment" Value="Right"/><Setter TargetName="ToggleKnob" Property="Margin" Value="0,0,4,0"/><Setter TargetName="CardBorder" Property="BorderBrush" Value="{DynamicResource ThemeAccent}"/><Setter TargetName="CardBorder" Property="Background" Value="#11B122E5"/></Trigger>
                                  <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="CardBorder" Property="Background" Value="{DynamicResource ThemeCard}"/></Trigger>
                                </ControlTemplate.Triggers></ControlTemplate></CheckBox.Template></CheckBox>
-                       </DataTemplate></ItemsControl.ItemTemplate></ItemsControl></ScrollViewer>
-                  <ScrollViewer x:Name="AuditPage" Grid.Row="2" VerticalScrollBarVisibility="Auto" Visibility="Collapsed"><StackPanel x:Name="AuditStack" FlowDirection="LeftToRight" Margin="6,0,12,0"/></ScrollViewer>
+                       </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                   </StackPanel></ScrollViewer>
                  <Border Grid.Row="3" Background="#111318" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="{StaticResource Rm}" Padding="16,12" Margin="0,16,0,0">
                    <Grid>
                      <Grid.ColumnDefinitions>
@@ -734,6 +486,23 @@ $xaml = @"
                      <ProgressBar x:Name="InstallProgress" Grid.Column="1" Height="8" Minimum="0" Maximum="100" Value="0" HorizontalAlignment="Stretch"/>
                    </Grid>
                  </Border></Grid>
+               <Grid x:Name="AuditPanel" Visibility="Collapsed">
+                 <Border Background="{DynamicResource ThemeCard}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="12" Padding="20" Margin="0,0,0,0">
+                   <Grid>
+                     <Grid.RowDefinitions>
+                       <RowDefinition Height="*"/>
+                       <RowDefinition Height="Auto"/>
+                     </Grid.RowDefinitions>
+                     <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+                       <TextBlock x:Name="AuditTerminalText" FontFamily="Consolas" FontSize="14" Foreground="{DynamicResource ThemeFg}" TextWrapping="Wrap" LineHeight="22" FlowDirection="LeftToRight" TextAlignment="Left"/>
+                     </ScrollViewer>
+                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,20,0,0" FlowDirection="LeftToRight" HorizontalAlignment="Left">
+                       <TextBlock Text="Enter profile number (1-10):" Foreground="{DynamicResource ThemeFg}" FontSize="16" VerticalAlignment="Center" FontFamily="Consolas" Margin="0,0,10,0"/>
+                       <TextBox x:Name="AuditInputBox" Width="80" Height="30" FontSize="16" FontFamily="Consolas" Background="{DynamicResource ThemeCard}" Foreground="{DynamicResource ThemeFg}" BorderBrush="{DynamicResource ThemeAccent}" BorderThickness="1" Padding="5,0" VerticalContentAlignment="Center"/>
+                     </StackPanel>
+                   </Grid>
+                 </Border>
+               </Grid>
                <Grid x:Name="InstallPanel" Visibility="Collapsed">
                  <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="600">
                    <Border Width="80" Height="80" CornerRadius="25" Background="{DynamicResource ThemeAccent}" HorizontalAlignment="Center" Margin="0,0,0,30" Effect="{StaticResource SoftGlow}">
@@ -745,16 +514,18 @@ $xaml = @"
                      <ProgressBar x:Name="InstProgressBig" Height="16" Minimum="0" Maximum="100" Value="0"/></Border>
                    <TextBlock x:Name="InstPct" Text="0%" Foreground="{DynamicResource ThemeFg}" FontSize="42" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,16"/>
                    <TextBlock x:Name="InstStatus" Text="" Foreground="{DynamicResource ThemeSub}" FontSize="15" HorizontalAlignment="Center" TextWrapping="Wrap"/></StackPanel></Grid></Grid></Grid></Grid>
-        <Border Grid.Row="2" Background="{DynamicResource ThemeCard}" CornerRadius="0,0,22,22" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,1,0,0" Padding="20,16">
-          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button x:Name="BtnBack" Content="Back" Padding="24,10" Margin="0,0,12,0" Style="{StaticResource PrimaryBtn}" FontSize="15"/>
-            <Button x:Name="BtnNext" Content="Next" Padding="24,10" Style="{StaticResource PrimaryBtn}" FontSize="15"/></StackPanel></Border></Grid></Border>
+          <Border Grid.Row="2" Background="{DynamicResource ThemeCard}" CornerRadius="0,0,22,0" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,1,0,0" Padding="20,16">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+              <Button x:Name="BtnBack" Content="Back" Padding="24,10" Margin="0,0,12,0" Style="{StaticResource PrimaryBtn}" FontSize="15"/>
+              <Button x:Name="BtnNext" Content="Next" Padding="24,10" Style="{StaticResource PrimaryBtn}" FontSize="15"/></StackPanel></Border></Grid></Grid></Border>
     <Border x:Name="StartupOverlay" Visibility="Visible" Panel.ZIndex="100" Background="{DynamicResource ThemeBg}" CornerRadius="{StaticResource Rxl}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" Margin="30,20" Effect="{StaticResource CardShadow}" MaxWidth="1200" MaxHeight="850">
       <Grid>
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
+        
+        <!-- Top Window Controls -->
         <Grid Grid.Row="0" Margin="20,15">
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
             <Button x:Name="OvMute" Content="Mute" Margin="0,0,8,0" Height="30" FontSize="12" Foreground="{DynamicResource ThemeSub}" Background="Transparent" BorderThickness="0" Cursor="Hand"/>
@@ -762,61 +533,73 @@ $xaml = @"
             <Button x:Name="OvClose" Content="&#xE8BB;" Style="{StaticResource CloseBtn}" Width="30" Height="30" FontSize="10"/>
           </StackPanel>
         </Grid>
-        <Grid Grid.Row="1" Margin="60,0,60,40">
-          <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-          </Grid.RowDefinitions>
-          <StackPanel Grid.Row="0" Margin="0,0,0,30">
-            <TextBlock x:Name="WelcomeTitle" FontSize="54" FontWeight="Light" HorizontalAlignment="Center"><Run Text="Win" Foreground="White"/><Run Text="Flex" Foreground="{DynamicResource ThemeAccent}"/><Run Text="OS" Foreground="White"/></TextBlock>
-            <TextBlock x:Name="WelcomeDesc" Text="F L E X I B L E   •   F A S T   •   Y O U R S" Foreground="{DynamicResource ThemeFg}" Opacity="0.7" FontSize="16" HorizontalAlignment="Center" Margin="0,8,0,0"/>
+        
+        <Grid Grid.Row="1" Margin="50,20,50,50">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="1.1*"/>
+            <ColumnDefinition Width="0.9*"/>
+          </Grid.ColumnDefinitions>
+          
+          <!-- Column 0 (Hero & Buttons) - Visual Right in RTL -->
+          <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,40,0" HorizontalAlignment="Left">
+            <TextBlock x:Name="WelcomeTitle" FontSize="76" FontWeight="Bold" Margin="0,0,0,10">
+              <Run Text="Win" Foreground="White"/><Run Text="Flex" Foreground="{DynamicResource ThemeAccent}"/><Run Text="OS" Foreground="White"/>
+            </TextBlock>
+            <TextBlock x:Name="WelcomeDesc" Text="F L E X I B L E   •   F A S T   •   Y O U R S" Foreground="{DynamicResource ThemeAccent}" Opacity="0.9" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,40"/>
+            
+            <Border Height="3" Width="60" Background="{DynamicResource ThemeAccent}" HorizontalAlignment="Left" CornerRadius="1.5" Margin="0,0,0,40"/>
+            
+            <TextBlock x:Name="WelcomeBodyTitle" Text="Welcome" Foreground="{DynamicResource ThemeFg}" FontSize="38" FontWeight="Bold" Margin="0,0,0,15"/>
+            <TextBlock x:Name="WelcomeIntroText" Text="Loading..." Foreground="{DynamicResource ThemeSub}" TextWrapping="Wrap" FontSize="18" LineHeight="28" MaxWidth="500" HorizontalAlignment="Left"/>
+            
+            <!-- Footer Buttons -->
+            <StackPanel Orientation="Horizontal" Margin="0,60,0,0">
+              <Button x:Name="BtnContinue" Content="Get Started" Padding="50,18" Margin="0,0,20,0" Style="{StaticResource PrimaryBtn}" FontSize="18" FontWeight="Bold"/>
+              <Button x:Name="BtnExitWelcome" Content="Exit" Padding="40,18" FontSize="18" FontWeight="SemiBold" Background="Transparent" Foreground="{DynamicResource ThemeSub}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" Cursor="Hand"/>
+            </StackPanel>
           </StackPanel>
-          <Grid Grid.Row="1">
-            <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-            <Border x:Name="WelcomePanel" Grid.Row="0" Background="{DynamicResource ThemeCard2}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="16" Padding="40" Effect="{StaticResource CardShadow}">
-              <Grid>
-                <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Margin="0,0,0,30" Padding="0,0,20,0">
-                  <StackPanel>
-                    <TextBlock x:Name="WelcomeBodyTitle" Text="Welcome" Foreground="{DynamicResource ThemeFg}" FontSize="36" FontWeight="SemiBold" Margin="0,0,0,16"/>
-                    <TextBlock x:Name="WelcomeIntroText" Text="Loading..." Foreground="{DynamicResource ThemeSub}" TextWrapping="Wrap" FontSize="18" LineHeight="28" Margin="0,0,0,40"/>
-                    <Border Background="{DynamicResource ThemeCard}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="14" Padding="24" Margin="0,0,0,24">
-                      <StackPanel>
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                          <TextBlock Text="&#xE9D5;" FontFamily="Segoe MDL2 Assets" FontSize="20" Foreground="{DynamicResource ThemeAccent}" Margin="0,0,12,0" VerticalAlignment="Center"/>
-                          <TextBlock x:Name="AboutTitleText" Text="About" Foreground="{DynamicResource ThemeFg}" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                        </StackPanel>
-                        <TextBlock x:Name="AboutBodyText" Text="Loading details..." Foreground="{DynamicResource ThemeSub}" TextWrapping="Wrap" FontSize="16" LineHeight="28"/>
-                      </StackPanel>
-                    </Border>
-                    <Border Background="{DynamicResource ThemeCard}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="14" Padding="24" Margin="0,0,0,24">
-                      <StackPanel>
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                          <TextBlock Text="&#xE9EE;" FontFamily="Segoe MDL2 Assets" FontSize="20" Foreground="{DynamicResource ThemeAccent}" Margin="0,0,12,0" VerticalAlignment="Center"/>
-                          <TextBlock x:Name="UsageTitleText" Text="How to use" Foreground="{DynamicResource ThemeFg}" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                        </StackPanel>
-                        <TextBlock x:Name="UsageBodyText" Text="Loading steps..." Foreground="{DynamicResource ThemeSub}" TextWrapping="Wrap" FontSize="16" LineHeight="28"/>
-                      </StackPanel>
-                    </Border>
-                    <TextBlock x:Name="HintText" Text="" Foreground="{DynamicResource ThemeSub}" TextWrapping="Wrap" FontSize="15" FontStyle="Italic" HorizontalAlignment="Center" Margin="0,10,0,10"/>
-                  </StackPanel>
-                </ScrollViewer>
-                <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center">
-                  <Button x:Name="BtnContinue" Content="Continue" Padding="50,18" Margin="0,0,24,0" Style="{StaticResource PrimaryBtn}" FontSize="18" FontWeight="SemiBold"/>
-                  <Button x:Name="BtnExitWelcome" Content="Exit" Padding="50,18" FontSize="18" Background="Transparent" Foreground="{DynamicResource ThemeSub}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" Cursor="Hand"/>
+          
+          <!-- Column 1 (Cards) - Visual Left in RTL -->
+          <StackPanel Grid.Column="1" VerticalAlignment="Center">
+             <!-- About Card -->
+             <Border x:Name="WelcomePanel" Background="{DynamicResource ThemeCard}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="16" Padding="30" Margin="0,0,0,25" Effect="{StaticResource CardShadow}">
+                <StackPanel>
+                   <StackPanel Orientation="Horizontal" Margin="0,0,0,15">
+                      <Border Background="#20FF00FF" CornerRadius="10" Padding="8" Margin="0,0,15,0">
+                         <TextBlock Text="&#xE9D5;" FontFamily="Segoe MDL2 Assets" FontSize="20" Foreground="{DynamicResource ThemeAccent}"/>
+                      </Border>
+                      <TextBlock x:Name="AboutTitleText" Text="About" Foreground="{DynamicResource ThemeFg}" FontSize="22" FontWeight="Bold" VerticalAlignment="Center"/>
+                   </StackPanel>
+                   <TextBlock x:Name="AboutBodyText" Text="Loading details..." Foreground="{DynamicResource ThemeSub}" TextWrapping="Wrap" FontSize="15" LineHeight="24"/>
                 </StackPanel>
-              </Grid>
-            </Border>
-            <Border x:Name="PreflightPanel" Grid.Row="1" Background="{DynamicResource ThemeCard2}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="16" Padding="30" Margin="0,20,0,0" Visibility="Collapsed">
-              <StackPanel>
-                <TextBlock x:Name="PreflightHeader" Text="Pre-flight Check" Foreground="{DynamicResource ThemeFg}" FontSize="20" FontWeight="SemiBold"/>
-                <TextBlock x:Name="PreflightStatus" Text="Verifying components..." Foreground="{DynamicResource ThemeSub}" Margin="0,12,0,0" TextWrapping="Wrap" FontSize="15"/>
-                <ProgressBar x:Name="PreflightBar" Height="14" Margin="0,18,0,0" Minimum="0" Maximum="100" Value="0"/>
-                <TextBlock x:Name="PreflightPct" Text="0%" Foreground="{DynamicResource ThemeSub}" FontSize="13" HorizontalAlignment="Right" Margin="0,6,0,0"/>
-              </StackPanel>
-            </Border>
-          </Grid>
-          <TextBlock Grid.Row="2" x:Name="WelcomeFoot" Visibility="Collapsed"/>
+             </Border>
+             
+             <!-- Usage Card -->
+             <Border Background="{DynamicResource ThemeCard2}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="16" Padding="30" Effect="{StaticResource CardShadow}">
+                <StackPanel>
+                   <StackPanel Orientation="Horizontal" Margin="0,0,0,15">
+                      <Border Background="#2000FFFF" CornerRadius="10" Padding="8" Margin="0,0,15,0">
+                         <TextBlock Text="&#xE9EE;" FontFamily="Segoe MDL2 Assets" FontSize="20" Foreground="#00FFFF"/>
+                      </Border>
+                      <TextBlock x:Name="UsageTitleText" Text="How to use" Foreground="{DynamicResource ThemeFg}" FontSize="22" FontWeight="Bold" VerticalAlignment="Center"/>
+                   </StackPanel>
+                   <TextBlock x:Name="UsageBodyText" Text="Loading steps..." Foreground="{DynamicResource ThemeSub}" TextWrapping="Wrap" FontSize="15" LineHeight="24"/>
+                </StackPanel>
+             </Border>
+          </StackPanel>
+          
+          <TextBlock x:Name="HintText" Visibility="Collapsed"/>
+          
+          <!-- Hidden Preflight for compatibility -->
+          <Border x:Name="PreflightPanel" Visibility="Collapsed">
+             <StackPanel>
+                <TextBlock x:Name="PreflightHeader"/>
+                <TextBlock x:Name="PreflightStatus"/>
+                <ProgressBar x:Name="PreflightBar"/>
+                <TextBlock x:Name="PreflightPct"/>
+             </StackPanel>
+          </Border>
+          <TextBlock x:Name="WelcomeFoot" Visibility="Collapsed"/>
         </Grid>
       </Grid>
     </Border>
@@ -837,10 +620,11 @@ function Find([string]$name) { $window.FindName($name) }
 $BgImage=Find "BgImage"; $TopTitle=Find "TopTitle"; $TopSub=Find "TopSub"
 $PageTitle=Find "PageTitle"; $PageDesc=Find "PageDesc"; $ItemsList=Find "ItemsList"
 $InstallProgress=Find "InstallProgress"; $StatusText=Find "StatusText"
-$InternetBanner=Find "InternetBanner"; $InternetText=Find "InternetText"; $AuditPage=Find "AuditPage"; $AuditStack=Find "AuditStack"
+$InternetBanner=Find "InternetBanner"; $InternetText=Find "InternetText"
 $BtnBack=Find "BtnBack"; $BtnNext=Find "BtnNext"
 $BtnLang=Find "BtnLang"; $BtnMute=Find "BtnMute"; $BtnMin=Find "BtnMin"
 $BtnMax=Find "BtnMax"; $BtnClose=Find "BtnClose"; $SideMenu=Find "SideMenu"
+$AuditPanel=Find "AuditPanel"; $AuditTerminalText=Find "AuditTerminalText"; $AuditInputBox=Find "AuditInputBox"
 $SideSub=Find "SideSub"; $SideFooter=Find "SideFooter"; $CmbTheme=Find "CmbTheme"
 $MainBorder=Find "MainBorder"; $MainArea=Find "MainArea"; $StartupOverlay=Find "StartupOverlay"
 $BrowsePanel=Find "BrowsePanel"; $InstallPanel=Find "InstallPanel"
@@ -949,8 +733,8 @@ function Render-SideMenu {
         $cat=$script:Categories[$i]; $cnt=Get-CategorySelectedCount $i
         $label=(L $cat.TitleHe $cat.TitleEn); if($cnt -gt 0){$label+=" ($cnt)"}
         $btn=New-Object System.Windows.Controls.Button
-        $btn.Content=$label; $ic=[string]$cat.Icon; if($ic -match '^&#x([0-9A-Fa-f]+);$'){$ic=[string][char][Convert]::ToInt32($Matches[1],16)}; $btn.Tag=$ic; $btn.Uid=$i.ToString(); $btn.Style=$window.FindResource("SidebarBtn")
-        $btn.Add_Click({$script:CurrentCategoryIndex=[int]$this.Uid;Show-Category})
+        $btn.Content=$label; $btn.Tag=$cat.Icon; $btn.Uid=$i.ToString(); $btn.Style=$window.FindResource("SidebarBtn")
+        $btn.IsHitTestVisible = $false
         $SideMenu.Children.Add($btn)|Out-Null; $script:SideButtons+=$btn
     }
     for($j=0;$j -lt $script:SideButtons.Count;$j++){
@@ -959,240 +743,89 @@ function Render-SideMenu {
         else{$b.Foreground=$window.Resources["ThemeSub"];$b.Background=[System.Windows.Media.Brushes]::Transparent}
     }
 }
-# ===== Audit page (console-style layout of HardwareAuditAndPrivacy.ps1, in the app theme) =====
-$script:AuditBuilt = $false; $script:AuditRows = @()
-function Get-GpuVramText($gpu) {
-    try {
-        $base = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
-        foreach ($k in (Get-ChildItem $base -ErrorAction SilentlyContinue)) {
-            $p = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
-            if ($p.DriverDesc -eq $gpu.Name -and $p.'HardwareInformation.qwMemorySize') { return "$([math]::Round([double]$p.'HardwareInformation.qwMemorySize' / 1GB, 1)) GB VRAM" }
-        }
-    } catch {}
-    if ($gpu.AdapterRAM -gt 0) { return "$([math]::Round($gpu.AdapterRAM / 1GB, 1)) GB VRAM" }
-    return "Shared RAM"
-}
-function Add-AuditText([string]$text, $brush, [double]$size = 13, [bool]$bold = $false, [double]$top = 0, [double]$left = 0) {
-    $tb = New-Object System.Windows.Controls.TextBlock
-    $tb.Text = $text; $tb.Foreground = $brush; $tb.FontSize = $size; $tb.TextWrapping = 'Wrap'
-    $tb.FontFamily = New-Object System.Windows.Media.FontFamily("Consolas")
-    if ($bold) { $tb.FontWeight = [System.Windows.FontWeights]::SemiBold }
-    $tb.Margin = New-Object System.Windows.Thickness($left, $top, 0, 0)
-    $AuditStack.Children.Add($tb) | Out-Null
-}
-function Add-AuditHeader([string]$text) {
-    $b = New-Object System.Windows.Controls.Border
-    $b.BorderBrush = $window.Resources["ThemeAccent"]; $b.BorderThickness = New-Object System.Windows.Thickness(0, 0, 0, 1)
-    $b.Padding = New-Object System.Windows.Thickness(0, 0, 0, 6); $b.Margin = New-Object System.Windows.Thickness(0, 16, 0, 8)
-    $tb = New-Object System.Windows.Controls.TextBlock
-    $tb.Text = $text; $tb.FontSize = 16; $tb.FontWeight = [System.Windows.FontWeights]::SemiBold
-    $tb.Foreground = $window.Resources["ThemeFg"]; $tb.FontFamily = New-Object System.Windows.Media.FontFamily("Consolas")
-    $b.Child = $tb
-    $AuditStack.Children.Add($b) | Out-Null
-}
-function Update-AuditSelection {
-    $vms = $script:CategoryVms[$script:AuditCatIndex]
-    for ($i = 0; $i -lt $script:AuditRows.Count; $i++) {
-        $row = $script:AuditRows[$i]; $on = [bool]$vms[$i].Selected
-        if ($on) {
-            $row.Border.BorderBrush = $window.Resources["ThemeAccent"]
-            $row.Border.Background = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#11B122E5"))
-            $row.Dot.Fill = $window.Resources["ThemeAccent"]
-        } else {
-            $row.Border.BorderBrush = $window.Resources["ThemeBorder"]
-            $row.Border.Background = $window.Resources["ThemeCard2"]
-            $row.Dot.Fill = [System.Windows.Media.Brushes]::Transparent
-        }
-    }
-}
-function Build-AuditPage {
-    $fg = $window.Resources["ThemeFg"]; $sub = $window.Resources["ThemeSub"]; $acc = $window.Resources["ThemeAccent"]
-    $AuditStack.Children.Clear()
-    if ($null -eq $script:hasSSD) { Get-SystemHardwareAudit | Out-Null }
-
-    # ---- Phase 1 ----
-    Add-AuditHeader "Phase 1: Comprehensive System & Hardware Audit"
-    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-    $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-    $bb = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
-    $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue | Select-Object -First 1
-    $osName = if ($os.BuildNumber -ge 22000) { "Windows 11" } else { "Windows 10" }
-    $ff = if ($script:IsLaptop) { "Laptop" } else { "Desktop" }
-    Add-AuditText "[+] Detected System Configuration: $ff" $acc 14 $true
-    Add-AuditText "* Operating System: $osName (Build $($os.BuildNumber))" $fg 13 $false 4 14
-    Add-AuditText "* Manufacturer & Model: $($cs.Manufacturer) - $($cs.Model)" $fg 13 $false 2 14
-    Add-AuditText "* Motherboard: $($bb.Manufacturer) $($bb.Product) (BIOS: $($bios.SMBIOSBIOSVersion))" $fg 13 $false 2 14
-
-    $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
-    Add-AuditText "* CPU: $($cpu.Name)" $acc 13 $true 12 14
-    Add-AuditText "- $($cpu.NumberOfCores) Cores / $($cpu.NumberOfLogicalProcessors) Threads | Base Clock: $($cpu.MaxClockSpeed) MHz" $sub 12.5 $false 2 30
-
-    $sticks = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
-    Add-AuditText "* RAM: $($script:totalRamGB) GB Installed" $acc 13 $true 12 14
-    $n = 1
-    foreach ($s in $sticks) {
-        Add-AuditText "- Stick $($n): $([math]::Round($s.Capacity / 1GB, 1)) GB | Speed: $($s.ConfiguredClockSpeed) MHz (Maker: $($s.Manufacturer))" $sub 12.5 $false 2 30
-        $n++
-    }
-
-    Add-AuditText "* GPU(s):" $acc 13 $true 12 14
-    foreach ($g in @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)) {
-        Add-AuditText "- $($g.Name) [$(Get-GpuVramText $g)] (Driver: $($g.DriverVersion))" $sub 12.5 $false 2 30
-    }
-
-    Add-AuditText "* Storage:" $acc 13 $true 12 14
-    $pds = @(Get-PhysicalDisk -ErrorAction SilentlyContinue)
-    foreach ($d in $pds) {
-        Add-AuditText "- $($d.FriendlyName) : $([math]::Round($d.Size / 1GB, 1)) GB | Media: $($d.MediaType) $($d.BusType)" $sub 12.5 $false 2 30
-    }
-
-    Add-AuditText "* Disk Health (S.M.A.R.T):" $acc 13 $true 12 14
-    foreach ($d in $pds) {
-        $ok = ($d.HealthStatus -eq "Healthy")
-        $hb = if ($ok) { $sub } else { [System.Windows.Media.Brushes]::OrangeRed }
-        Add-AuditText "- $($d.FriendlyName): $(if($ok){'[Healthy]'}else{'[WARNING]'}) (Status: $($d.OperationalStatus))" $hb 12.5 $false 2 30
-    }
-
-    Add-AuditText "* Network Interfaces & Latency:" $acc 13 $true 12 14
-    foreach ($nic in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Up" })) {
-        Add-AuditText "- $($nic.Name) ($($nic.InterfaceDescription)) - Link: $($nic.LinkSpeed)" $sub 12.5 $false 2 30
-    }
-    try {
-        $pg = Test-Connection -ComputerName 8.8.8.8 -Count 1 -ErrorAction Stop
-        $ms = if ($pg.ResponseTime -ne $null) { $pg.ResponseTime } else { $pg.Latency }
-        Add-AuditText "- Internet Ping (8.8.8.8): $ms ms" $fg 12.5 $false 2 30
-    } catch { Add-AuditText "- Internet Ping (8.8.8.8): unavailable" $sub 12.5 $false 2 30 }
-
-    # ---- Phase 2 ----
-    Add-AuditHeader "Phase 2: Define Usage Profile (Customization)"
-    Add-AuditText "What is the primary use case for this PC? (Select one):" $fg 13 $false 0 0
-    $script:AuditRows = @()
-    $vms = $script:CategoryVms[$script:AuditCatIndex]
-    for ($i = 0; $i -lt $vms.Count; $i++) {
-        $raw = $vms[$i].Raw
-        $bd = New-Object System.Windows.Controls.Border
-        $bd.CornerRadius = New-Object System.Windows.CornerRadius(10); $bd.BorderThickness = New-Object System.Windows.Thickness(1)
-        $bd.Padding = New-Object System.Windows.Thickness(14, 10, 14, 10); $bd.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
-        $bd.Cursor = [System.Windows.Input.Cursors]::Hand; $bd.Tag = $i
-        $dock = New-Object System.Windows.Controls.DockPanel
-        $dot = New-Object System.Windows.Shapes.Ellipse
-        $dot.Width = 12; $dot.Height = 12; $dot.StrokeThickness = 1.5; $dot.Stroke = $acc
-        $dot.Margin = New-Object System.Windows.Thickness(0, 0, 14, 0); $dot.VerticalAlignment = 'Center'
-        [System.Windows.Controls.DockPanel]::SetDock($dot, 'Left')
-        $tb = New-Object System.Windows.Controls.TextBlock
-        $tb.FontFamily = New-Object System.Windows.Media.FontFamily("Consolas"); $tb.FontSize = 13; $tb.TextWrapping = 'Wrap'
-        $r1 = New-Object System.Windows.Documents.Run("[$($i + 1)] "); $r1.Foreground = $acc; $r1.FontWeight = [System.Windows.FontWeights]::SemiBold
-        $r2 = New-Object System.Windows.Documents.Run($raw.Title); $r2.Foreground = $fg; $r2.FontWeight = [System.Windows.FontWeights]::SemiBold
-        $r3 = New-Object System.Windows.Documents.Run(" - $($raw.Desc)"); $r3.Foreground = $sub
-        $tb.Inlines.Add($r1); $tb.Inlines.Add($r2); $tb.Inlines.Add($r3)
-        $dock.Children.Add($dot) | Out-Null; $dock.Children.Add($tb) | Out-Null
-        $bd.Child = $dock
-        $bd.Add_MouseLeftButtonUp({
-            $idx = [int]$this.Tag; $list = $script:CategoryVms[$script:AuditCatIndex]
-            $was = [bool]$list[$idx].Selected
-            foreach ($v in $list) { $v.Selected = $false }
-            if (-not $was) { $list[$idx].Selected = $true }
-            Update-AuditSelection; Render-SideMenu
-        })
-        $AuditStack.Children.Add($bd) | Out-Null
-        $script:AuditRows += [pscustomobject]@{ Border = $bd; Dot = $dot }
-    }
-    Update-AuditSelection
-    $script:AuditBuilt = $true
-}
-function Show-AuditPage {
-    for ($i = 0; $i -lt $script:Categories.Count; $i++) { if ($script:Categories[$i].Key -eq "audit") { $script:AuditCatIndex = $i } }
-    if (-not $script:AuditBuilt) {
-        $window.Cursor = [System.Windows.Input.Cursors]::Wait
-        $window.Dispatcher.Invoke([action]{}, "Background")
-        try { Build-AuditPage } catch { $AuditStack.Children.Clear(); Add-AuditText "Hardware audit failed: $($_.Exception.Message)" ($window.Resources["ThemeSub"]) }
-        $window.Cursor = $null
-    } else { Update-AuditSelection }
-}
 function Show-Category {
     $script:IsInstallPhase=$false; $cat=$script:Categories[$script:CurrentCategoryIndex]
     $PageTitle.Text=(L $cat.TitleHe $cat.TitleEn)
     $PageDesc.Text=(L (-join([char]0x05D1,[char]0x05D7,[char]0x05E8,[char]0x0020,[char]0x05DE,[char]0x05D4,[char]0x0020,[char]0x05DC,[char]0x05D4,[char]0x05EA,[char]0x05E7,[char]0x05D9,[char]0x05DF,[char]0x002E)) "Select what to install.")
     $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]
     if($cat.Key -eq "custom"){$SearchBoxBorder.Visibility='Visible'}else{$SearchBoxBorder.Visibility='Collapsed'}
-    if($cat.Key -eq "audit"){
-        $ItemsList.Parent.Visibility='Collapsed'; $AuditPage.Visibility='Visible'; $BtnSelectAll.Visibility='Collapsed'
-        $PageDesc.Text=(L (He @(0x05D1,0x05D7,0x05E8,0x20,0x05E4,0x05E8,0x05D5,0x05E4,0x05D9,0x05DC,0x20,0x05E9,0x05D9,0x05DE,0x05D5,0x05E9,0x20,0x05DC,0x05DE,0x05D7,0x05E9,0x05D1,0x2E)) "Choose a usage profile for this PC.")
-        Show-AuditPage
-    } else { $ItemsList.Parent.Visibility='Visible'; $AuditPage.Visibility='Collapsed'; $BtnSelectAll.Visibility='Visible' }
-    $BrowsePanel.Visibility='Visible'; $InstallPanel.Visibility='Collapsed'
+    $InstallPanel.Visibility='Collapsed'
+    if ($cat.Key -eq "audit") {
+        $BrowsePanel.Visibility='Collapsed'
+        $AuditPanel.Visibility='Visible'
+        Get-SystemHardwareAudit
+    } else {
+        $BrowsePanel.Visibility='Visible'
+        $AuditPanel.Visibility='Collapsed'
+    }
     $InstallProgress.Value=0; $StatusText.Text=(L (-join([char]0x05DE,[char]0x05D5,[char]0x05DB,[char]0x05DF,[char]0x002E)) "Ready.")
     $BtnBack.IsEnabled=$true; $BtnNext.IsEnabled=$true; Render-SideMenu
 }
 function Get-SelectedSoftware { $sel=New-Object System.Collections.Generic.List[object]; for($i=0;$i -lt $script:CategoryVms.Count;$i++){foreach($vm in $script:CategoryVms[$i]){if($vm.Selected){$sel.Add($vm.Raw)}}}; return $sel }
 
-$BtnSelectAll.Add_Click({ if($script:Categories[$script:CurrentCategoryIndex].Key -eq "audit"){return}; foreach($vm in $script:CategoryVms[$script:CurrentCategoryIndex]){$vm.Selected=$true}; $ItemsList.ItemsSource=$null; $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]; Render-SideMenu })
-$BtnDeselectAll.Add_Click({ foreach($vm in $script:CategoryVms[$script:CurrentCategoryIndex]){$vm.Selected=$false}; $ItemsList.ItemsSource=$null; $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]; if($script:Categories[$script:CurrentCategoryIndex].Key -eq "audit"){Update-AuditSelection}; Render-SideMenu })
-
-# Runs all selected system tweaks/profiles in ONE detached hidden low-priority PowerShell process.
-# The user can keep using the PC (and even close this window) no matter how long it takes (1h+).
-function Start-BackgroundTweaks([string[]]$ids) {
-    $bgLog = Join-Path $env:TEMP "winflex-background.log"
-    $names = @('Write-Log','Get-SystemHardwareAudit','Invoke-ExtremeDebloat','Invoke-ForensicDeepScan','Invoke-HardwareAuditReport','Invoke-RestorePointSafe','Invoke-PrivacyLockdown','Invoke-BloatRemoval','Invoke-NetworkLatencyTune','Invoke-UndoTweaks','Invoke-SystemTweak')
-    $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine('$ErrorActionPreference = "Continue"')
-    [void]$sb.AppendLine("`$script:LogPath = '" + $bgLog.Replace("'", "''") + "'")
-    [void]$sb.AppendLine('try { (Get-Process -Id $PID).PriorityClass = "BelowNormal" } catch {}')
-    foreach ($n in $names) {
-        $c = Get-Command $n -CommandType Function -ErrorAction SilentlyContinue
-        if ($c) { [void]$sb.AppendLine($c.ScriptBlock.Ast.Extent.Text) }
-    }
-    $idList = ($ids | ForEach-Object { "'" + $_ + "'" }) -join ','
-    [void]$sb.AppendLine('$ids = @(' + $idList + ')')
-    [void]$sb.AppendLine('Write-Log "Background worker started (PID $PID). Tasks: $($ids -join '', '')"')
-    [void]$sb.AppendLine('foreach ($id in $ids) { try { Write-Log "START: $id"; Invoke-SystemTweak $id; Write-Log "DONE: $id" } catch { Write-Log "FAILED: $id :: $($_.Exception.Message)" } }')
-    [void]$sb.AppendLine('Write-Log "Background worker finished."')
-    [void]$sb.AppendLine('try { Add-Type -AssemblyName System.Windows.Forms, System.Drawing; $ni = New-Object System.Windows.Forms.NotifyIcon; $ni.Icon = [System.Drawing.SystemIcons]::Information; $ni.Visible = $true; $ni.ShowBalloonTip(15000, "WinFlexOS", "Background optimization finished. A restart is recommended.", [System.Windows.Forms.ToolTipIcon]::Info); Start-Sleep -Seconds 16; $ni.Dispose() } catch {}')
-    $file = Join-Path $env:TEMP ("winflex-bg-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".ps1")
-    [IO.File]::WriteAllText($file, $sb.ToString(), (New-Object System.Text.UTF8Encoding $true))
-    Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$file`"") | Out-Null
-    Write-Log "Background worker launched: $file (log: $bgLog)"
-    return $bgLog
-}
+$BtnSelectAll.Add_Click({ foreach($vm in $script:CategoryVms[$script:CurrentCategoryIndex]){$vm.Selected=$true}; $ItemsList.ItemsSource=$null; $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]; Render-SideMenu })
+$BtnDeselectAll.Add_Click({ foreach($vm in $script:CategoryVms[$script:CurrentCategoryIndex]){$vm.Selected=$false}; $ItemsList.ItemsSource=$null; $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]; Render-SideMenu })
 
 function Start-InstallPhase {
     $selected=@(Get-SelectedSoftware)
-    if($selected.Count -eq 0){$StatusText.Text=(L (-join([char]0x05DC,[char]0x05D0,[char]0x0020,[char]0x05E0,[char]0x05D1,[char]0x05D7,[char]0x05E8,[char]0x0020,[char]0x05DB,[char]0x05DC,[char]0x05D5,[char]0x05DD,[char]0x002E)) "Nothing selected.");return}
-    $script:IsInstallPhase=$true; $BrowsePanel.Visibility='Collapsed'; $InstallPanel.Visibility='Visible'
-    $PageTitle.Text=(L (-join([char]0x05DE,[char]0x05EA,[char]0x05E7,[char]0x05D9,[char]0x05DF,[char]0x0020,[char]0x05EA,[char]0x05D5,[char]0x05DB,[char]0x05E0,[char]0x05D5,[char]0x05EA,[char]0x002E,[char]0x002E,[char]0x002E)) "Installing..."); $PageDesc.Text=(L (-join([char]0x05D0,[char]0x05E0,[char]0x05D0,[char]0x0020,[char]0x05D4,[char]0x05DE,[char]0x05EA,[char]0x05DF,[char]0x002E,[char]0x002E,[char]0x002E)) "Please wait...")
-    $InstTitle.Text=(L (-join([char]0x05DE,[char]0x05EA,[char]0x05E7,[char]0x05D9,[char]0x05DF,[char]0x0020,[char]0x05EA,[char]0x05D5,[char]0x05DB,[char]0x05E0,[char]0x05D5,[char]0x05EA,[char]0x002E,[char]0x002E,[char]0x002E)) "Installing software..."); $InstProgressBig.Value=0; $InstPct.Text="0%"
-    $InstAppName.Text=""; $InstCount.Text=""; $InstStatus.Text=""
-    $BtnBack.IsEnabled=$false; $BtnNext.IsEnabled=$false; $window.Dispatcher.Invoke([action]{},"Background")
-    $hasWinget=[bool](Get-Command winget -ErrorAction SilentlyContinue)
-    if(-not $hasWinget){
-        Write-Log "winget missing"; $InstAppName.Text="Winget"
-        $InstStatus.Text=(L (-join([char]0x05DE,[char]0x05EA,[char]0x05E7,[char]0x05D9,[char]0x05DF,[char]0x0020,[char]0x0057,[char]0x0069,[char]0x006E,[char]0x0067,[char]0x0065,[char]0x0074,[char]0x002E,[char]0x002E,[char]0x002E)) "Installing Winget..."); $window.Dispatcher.Invoke([action]{},"Background")
-        $tmpDir=Join-Path $env:TEMP "winget-install"; New-Item -ItemType Directory -Force -Path $tmpDir -ErrorAction SilentlyContinue|Out-Null
-        $bundle=Join-Path $tmpDir "Microsoft.DesktopAppInstaller.msixbundle"
-        try{(New-Object Net.WebClient).DownloadFile("https://aka.ms/getwinget",$bundle)}catch{}
-        try{Add-AppxPackage -Path $bundle -ErrorAction SilentlyContinue|Out-Null}catch{}; Start-Sleep -Seconds 2 }
-    $script:BgStarted=$false; $script:BgLogPath=""
-    $bgTweaks=@($selected | Where-Object { $_.IsTweak } | ForEach-Object { $_.TweakId })
-    if($bgTweaks.Count -gt 0){ try{ $script:BgLogPath=Start-BackgroundTweaks $bgTweaks; $script:BgStarted=$true }catch{ Write-Log "Background start failed: $($_.Exception.Message)" } }
-    $total=$selected.Count
-    for($i=0;$i -lt $total;$i++){
-        $sw=$selected[$i]; $name=$sw.Name
-        $InstAppName.Text=$name; $InstCount.Text="$($i+1) / $total"
-        $InstPct.Text="$([int](($i*100)/$total))%"; $InstProgressBig.Value=[int](($i*100)/$total)
-        $InstStatus.Text=(L ((-join([char]0x05DE,[char]0x05EA,[char]0x05E7,[char]0x05D9,[char]0x05DF,[char]0x003A,[char]0x0020))+$name) "Installing: $name"); $window.Dispatcher.Invoke([action]{},"Background")
-        try{ Write-Log "Install start: $name"
-            if($sw.IsTweak) { if(-not $script:BgStarted){ Invoke-SystemTweak $sw.TweakId } else { Write-Log "Running in background: $name" } }
-            elseif($sw.IsCustom) { Invoke-WingetInstall $sw.WingetId $false }
-            elseif($sw.WingetId){Invoke-WingetInstall $sw.WingetId}
-            elseif($sw.Path){if(-not(Test-Path -LiteralPath $sw.Path)){throw "Not found: $($sw.Path)"};Start-Process -FilePath $sw.Path -Wait}
-            else{throw "Unknown method"}; Write-Log "Install success: $name"
-        }catch{Write-Log "Install failed: $name :: $($_.Exception.Message)"}
+    if ($AuditInputBox -and $AuditInputBox.Text -match "^([1-9]|1[0-3])$") {
+        $tId = "AuditProfile" + $AuditInputBox.Text
+        $tName = "Profile $tId"
+        $selected += [pscustomobject]@{ Name = $tName; TweakId = $tId; IsTweak = $true }
     }
+    if($selected.Count -eq 0){$StatusText.Text=(L (He @(0x05DC,0x05D0,0x0020,0x05E0,0x05D1,0x05D7,0x05E8,0x0020,0x05DB,0x05DC,0x05D5,0x05DD,0x002E)) "Nothing selected.");return}
+    $script:IsInstallPhase=$true; $BrowsePanel.Visibility='Collapsed'; $AuditPanel.Visibility='Collapsed'; $InstallPanel.Visibility='Visible'
+    $PageTitle.Text=(L (He @(0x05DE,0x05EA,0x05E7,0x05D9,0x05DF,0x0020,0x05EA,0x05D5,0x05DB,0x05E0,0x05D5,0x05EA,0x002E,0x002E,0x002E)) "Installing..."); $PageDesc.Text=(L (He @(0x05D0,0x05E0,0x05D0,0x0020,0x05D4,0x05DE,0x05EA,0x05DF,0x002E,0x002E,0x002E)) "Please wait...")
+    $BtnBack.IsEnabled=$false; $BtnNext.IsEnabled=$false; $window.Dispatcher.Invoke([action]{},"Background")
+
+    $tweaks = @($selected | Where-Object { $_.IsTweak })
+    $softwares = @($selected | Where-Object { -not $_.IsTweak })
+
+    if ($tweaks.Count -gt 0) {
+        $InstTitle.Text=(L (He @(0x05DE,0x05E0,0x05E7,0x05D4,0x0020,0x05D5,0x05DE,0x05D9,0x05D9,0x05E2,0x05DC,0x002E,0x002E,0x002E)) "Cleaning and optimizing...")
+        $total=$tweaks.Count
+        for($i=0;$i -lt $total;$i++){
+            $sw=$tweaks[$i]; $name=$sw.Name
+            $InstAppName.Text=$name; $InstCount.Text="$($i+1) / $total"
+            $InstPct.Text="$([int](($i*100)/$total))%"; $InstProgressBig.Value=[int](($i*100)/$total)
+            $InstStatus.Text=(L ((He @(0x05DE,0x05D1,0x05E6,0x05E2,0x003A,0x0020))+$name) "Applying: $name"); $window.Dispatcher.Invoke([action]{},"Background")
+            try{ Write-Log "Tweak start: $name"
+                Invoke-SystemTweak $sw.TweakId
+                Write-Log "Tweak success: $name"
+            }catch{Write-Log "Tweak failed: $name :: $($_.Exception.Message)"}
+        }
+    }
+
+    if ($softwares.Count -gt 0) {
+        $InstTitle.Text=(L (He @(0x05DE,0x05EA,0x05E7,0x05D9,0x05DF,0x0020,0x05EA,0x05D5,0x05DB,0x05E0,0x05D5,0x05EA,0x002E,0x002E,0x002E)) "Installing software...")
+        $InstAppName.Text=""; $InstCount.Text=""; $InstStatus.Text=""; $InstProgressBig.Value=0; $InstPct.Text="0%"
+        $hasWinget=[bool](Get-Command winget -ErrorAction SilentlyContinue)
+        if(-not $hasWinget){
+            Write-Log "winget missing"; $InstAppName.Text="Winget"
+            $InstStatus.Text=(L (He @(0x05DE,0x05EA,0x05E7,0x05D9,0x05DF,0x0020,0x0057,0x0069,0x006E,0x0067,0x0065,0x0074,0x002E,0x002E,0x002E)) "Installing Winget..."); $window.Dispatcher.Invoke([action]{},"Background")
+            $tmpDir=Join-Path $env:TEMP "winget-install"; New-Item -ItemType Directory -Force -Path $tmpDir -ErrorAction SilentlyContinue|Out-Null
+            $bundle=Join-Path $tmpDir "Microsoft.DesktopAppInstaller.msixbundle"
+            try{(New-Object Net.WebClient).DownloadFile("https://aka.ms/getwinget",$bundle)}catch{}
+            try{Add-AppxPackage -Path $bundle -ErrorAction SilentlyContinue|Out-Null}catch{}; Start-Sleep -Seconds 2 }
+        $total=$softwares.Count
+        for($i=0;$i -lt $total;$i++){
+            $sw=$softwares[$i]; $name=$sw.Name
+            $InstAppName.Text=$name; $InstCount.Text="$($i+1) / $total"
+            $InstPct.Text="$([int](($i*100)/$total))%"; $InstProgressBig.Value=[int](($i*100)/$total)
+            $InstStatus.Text=(L ((He @(0x05DE,0x05EA,0x05E7,0x05D9,0x05DF,0x003A,0x0020))+$name) "Installing: $name"); $window.Dispatcher.Invoke([action]{},"Background")
+            try{ Write-Log "Install start: $name"
+                if($sw.IsCustom) { Invoke-WingetInstall $sw.WingetId $false }
+                elseif($sw.WingetId){Invoke-WingetInstall $sw.WingetId}
+                elseif($sw.Path){if(-not(Test-Path -LiteralPath $sw.Path)){throw "Not found: $($sw.Path)"};Start-Process -FilePath $sw.Path -Wait}
+                else{throw "Unknown method"}; Write-Log "Install success: $name"
+            }catch{Write-Log "Install failed: $name :: $($_.Exception.Message)"}
+        }
+    }
+    
     $InstProgressBig.Value=100; $InstPct.Text="100%"
-    $InstTitle.Text=(L (-join([char]0x05D4,[char]0x05D5,[char]0x05E9,[char]0x05DC,[char]0x05DD,[char]0x05D5,[char]0x0021)) "Completed!"); $InstAppName.Text=(L (-join([char]0x05DB,[char]0x05DC,[char]0x0020,[char]0x05D4,[char]0x05EA,[char]0x05D5,[char]0x05DB,[char]0x05E0,[char]0x05D5,[char]0x05EA,[char]0x0020,[char]0x05D4,[char]0x05D5,[char]0x05EA,[char]0x05E7,[char]0x05E0,[char]0x05D5,[char]0x002E)) "All software installed.")
-    $InstCount.Text="$total / $total"; $InstStatus.Text=(L (-join([char]0x05D1,[char]0x05D3,[char]0x05D5,[char]0x05E7,[char]0x0020,[char]0x05DC,[char]0x05D5,[char]0x05D2,[char]0x002E)) "Check log.")
-    if($script:BgStarted){ $InstStatus.Text=(L "האופטימיזציה רצה ברקע - אפשר להמשיך לעבוד כרגיל (הלוג: $($script:BgLogPath))" "Optimization is running in the background - keep working normally. Log: $($script:BgLogPath)"); $InstAppName.Text=(L "התוכנות הותקנו. האופטימיזציה ממשיכה ברקע." "Software installed. Optimization continues in the background.") }
-    $PageTitle.Text=(L (-join([char]0x05D4,[char]0x05D5,[char]0x05E9,[char]0x05DC,[char]0x05DD,[char]0x05D5,[char]0x0021)) "Completed."); $PageDesc.Text=(L (-join([char]0x05DB,[char]0x05DC,[char]0x0020,[char]0x05D4,[char]0x05EA,[char]0x05D5,[char]0x05DB,[char]0x05E0,[char]0x05D5,[char]0x05EA,[char]0x05D4,[char]0x05D5,[char]0x05EA,[char]0x05E7,[char]0x05E0,[char]0x05D5,[char]0x002E)) "All software installed.")
+    $InstTitle.Text=(L (He @(0x05D4,0x05D5,0x05E9,0x05DC,0x05DD,0x05D5,0x0021)) "Completed!"); $InstAppName.Text=(L (He @(0x05DB,0x05DC,0x0020,0x05D4,0x05EA,0x05D5,0x05DB,0x05E0,0x05D5,0x05EA,0x0020,0x05D4,0x05D5,0x05EA,0x05E7,0x05E0,0x05D5,0x002E)) "All software installed.")
+    $InstCount.Text=""; $InstStatus.Text=(L (He @(0x05D1,0x05D3,0x05D5,0x05E7,0x0020,0x05DC,0x05D5,0x05D2,0x002E)) "Check log.")
+    $PageTitle.Text=(L (He @(0x05D4,0x05D5,0x05E9,0x05DC,0x05DD,0x05D5,0x0021)) "Completed."); $PageDesc.Text=(L (He @(0x05DB,0x05DC,0x0020,0x05D4,0x05EA,0x05D5,0x05DB,0x05E0,0x05D5,0x05EA,0x05D4,0x05D5,0x05EA,0x05E7,0x05E0,0x05D5,0x002E)) "All software installed.")
     $BtnBack.IsEnabled=$true; $BtnNext.IsEnabled=$false
 }
 
@@ -1315,8 +948,8 @@ $b13 = He @(0x0034, 0x002E, 0x0020, 0x05D1, 0x05E1, 0x05D9, 0x05D5, 0x05DD, 0x00
 $b14 = He @(0x000A)
 $b15 = He @(0x05DC, 0x05D7, 0x05E6, 0x05D5, 0x0020, 0x05E2, 0x05DC, 0x0020, 0x0027, 0x05D4, 0x05D1, 0x05D0, 0x0027, 0x0020, 0x05DB, 0x05D3, 0x05D9, 0x0020, 0x05DC, 0x05D4, 0x05DE, 0x05E9, 0x05D9, 0x05DA, 0x002C, 0x0020, 0x05D0, 0x05D5, 0x0020, 0x05E2, 0x05DC, 0x0020, 0x0027, 0x05DC, 0x05D0, 0x0020, 0x05DE, 0x05E2, 0x05D5, 0x05E0, 0x05D9, 0x05D9, 0x05DF, 0x0027, 0x0020, 0x05DB, 0x05D3, 0x05D9, 0x0020, 0x05DC, 0x05E6, 0x05D0, 0x05EA, 0x0020, 0x05DE, 0x05DB, 0x05D0, 0x05DF, 0x002E)
 $WelcomeIntroText.Text=(L ($b1+$b2+$b3) "").Trim();
-$AboutTitleText.Text=(L (He @(0x05D7,0x05D5,0x05DE,0x05E8,0x05EA,0x0020,0x05D4,0x05DE,0x05E2,0x05E8,0x05DB,0x05EA)) "System Hardware")
-$AboutBodyText.Text=Get-SystemHardwareAudit
+$AboutTitleText.Text=(L (He @(0x05D9,0x05EA,0x05E8,0x05D5,0x05E0,0x05D5,0x05EA,0x0020,0x05D4,0x05DE,0x05E2,0x05E8,0x05DB,0x05EA)) "System Advantages")
+$AboutBodyText.Text=(L ($b5+$b6+$b7+$b7b) "").Trim()
 $UsageTitleText.Text=(L $b9 "").Trim()
 $UsageBodyText.Text=(L ($b10+$b11+$b12+$b13) "").Trim(); $HintText.Text=(L $b15 "").Trim()
 Apply-Language
@@ -1371,4 +1004,3 @@ $IntroVideo.Add_MediaEnded({
 })
 
 $window.ShowDialog()|Out-Null
-
