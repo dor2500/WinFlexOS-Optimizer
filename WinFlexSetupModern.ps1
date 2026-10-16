@@ -6,8 +6,8 @@ Run (as Administrator):
   irm https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master/WinFlexSetupModern.ps1 | iex
 
 Modes:
-  .\WinFlexSetupModern.ps1                          # GUI (apps, tweaks, profiles)
-  .\WinFlexSetupModern.ps1 -Console                 # console engine with the profile menu
+  .\WinFlexSetupModern.ps1                          # console: hardware audit + profile menu (default)
+  .\WinFlexSetupModern.ps1 -Gui                     # graphical app (apps, tweaks, profiles) - also option G in the menu
   .\WinFlexSetupModern.ps1 -ProfileId 1,8,12        # run profiles directly (Gaming + Privacy Shield + Deep Cleanup)
   .\WinFlexSetupModern.ps1 -ProfileId 7 -DryRun     # simulate: changes nothing, still writes the HTML report
   . .\WinFlexSetupModern.ps1 -LibraryOnly           # load the engine functions only
@@ -19,11 +19,12 @@ Hebrew text is therefore built from character codes / HTML entities.
 [CmdletBinding()]
 param(
     # --- GUI ---
+    [switch]$Gui,                 # open the graphical app instead of the console menu
     [switch]$SkipWelcome,         # skip the welcome screen
     [string]$MenuPath,            # optional external menu file instead of the built-in menu
-    # --- Console engine (any of these runs the engine instead of the GUI) ---
+    # --- Console engine (the default) ---
     [string]$ProfileId = '',      # "1".."13" or a comma separated list, e.g. "1,8,12"
-    [switch]$Console,             # open the console profile menu
+    [switch]$Console,             # console menu (default; kept for older commands)
     [switch]$Silent,              # no prompts
     [switch]$NoPause,             # do not wait for a key at the end
     [switch]$DryRun,              # simulate everything, change nothing
@@ -34,13 +35,14 @@ param(
     [string]$ReportDir = ''       # where to save the HTML report (default: Desktop)
 )
 
-$script:WFEngineMode = [bool]($ProfileId -or $Console -or $Silent -or $DryRun -or $Background -or $Worker -or $LibraryOnly)
+# Console engine unless the GUI was asked for. -ProfileId always means the engine (the GUI runs profiles that way).
+$script:WFEngineMode = (-not $Gui) -or [bool]($ProfileId -or $Worker -or $LibraryOnly)
 
 if ($script:WFEngineMode) {
 # ##############################################################################
 #  CONSOLE ENGINE  (profiles, restore point, HTML report, UNDO)
 # ##############################################################################
-$script:WFVersion = '6.2'
+$script:WFVersion = '6.3'
 $script:RawBase   = 'https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master'
 
 # ==============================================================================
@@ -592,7 +594,9 @@ function Remove-WFAppx {
         if ($seen.ContainsKey($p.PackageFullName)) { continue }
         $seen[$p.PackageFullName] = $true
         $actionTxt = "Uninstall app for all users" + $(if ($Desc) { "  ($Desc)" } else { '' })
-        $revert = "winget install / Microsoft Store:  $($p.Name)"
+        # The Store opens an app's page by its PackageFamilyName, so this link reinstalls exactly this app.
+        $revert = "ms-windows-store://pdp/?PFN=$($p.PackageFamilyName)"
+        $appUndo = @{ Kind = 'Appx'; Name = $p.Name; PFN = $p.PackageFamilyName }
         if ($script:WF.DryRun) {
             Add-WFAction -Category $Category -Type 'App' -Target $p.Name -Action $actionTxt -Before ("Installed v{0}" -f $p.Version) -After 'Removed' -Detail $p.PackageFullName -Status Changed -Revert $revert | Out-Null
             continue
@@ -602,7 +606,7 @@ function Remove-WFAppx {
             $still = @(Get-AppxPackage -AllUsers -Name $p.Name -ErrorAction SilentlyContinue | Where-Object { $_.PackageFullName -eq $p.PackageFullName })
             if ($still.Count -gt 0) { throw 'Package is still registered after removal attempt.' }
             [void]$cache.Remove($p)
-            Add-WFAction -Category $Category -Type 'App' -Target $p.Name -Action $actionTxt -Before ("Installed v{0}" -f $p.Version) -After 'Removed' -Detail $p.PackageFullName -Status Changed -Revert $revert | Out-Null
+            Add-WFAction -Category $Category -Type 'App' -Target $p.Name -Action $actionTxt -Before ("Installed v{0}" -f $p.Version) -After 'Removed' -Detail $p.PackageFullName -Status Changed -Revert $revert -Undo $appUndo | Out-Null
         } catch {
             Add-WFAction -Category $Category -Type 'App' -Target $p.Name -Action $actionTxt -Before ("Installed v{0}" -f $p.Version) -Status Failed -Detail $_.Exception.Message | Out-Null
         }
@@ -1126,6 +1130,10 @@ function Export-WFHtmlReport {
                 }
 
                 let revertCode = a.revert ? `<div class="revert-code" title="${esc(a.revert)}">${esc(a.revert)}</div>` : `<span style="color: var(--text-muted);">-</span>`;
+                if (a.revert && a.revert.indexOf('ms-windows-store:') === 0) {
+                    // Removed apps: a real link that opens the app's page in the Microsoft Store
+                    revertCode = `<a class="revert-code store-link" href="${esc(a.revert)}">&#x5E4;&#x5EA;&#x5D7; &#x5D1;-Microsoft Store</a>`;
+                }
                 if (a.detail) {
                     revertCode += `<div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">${esc(a.detail)}</div>`;
                 }
@@ -1613,6 +1621,18 @@ function Export-WFHtmlReport {
             direction: ltr;
             text-align: left;
             word-break: break-all;
+        }
+
+        .store-link {
+            display: inline-block;
+            direction: rtl;
+            text-decoration: none;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            font-weight: 600;
+        }
+
+        .store-link:hover {
+            border-color: var(--cyan-neon);
         }
 
         .notice {
@@ -2634,6 +2654,14 @@ function Invoke-WFUndoRecord {
                 Add-WFAction -Category 'UNDO' -Type 'Feature' -Target $u.Name -Action 'Reinstall Windows capability' -Before 'Removed' -After 'Installed' -Status Changed | Out-Null
             } catch { Add-WFAction -Category 'UNDO' -Type 'Feature' -Target $u.Name -Action 'Reinstall Windows capability' -Status Failed -Detail $_.Exception.Message | Out-Null }
         }
+        'Appx' {
+            # Removed apps cannot be re-registered offline; the report links straight to each app's Store page.
+            if (Get-AppxPackage -Name $u.Name -ErrorAction SilentlyContinue) {
+                Add-WFAction -Category 'UNDO' -Type 'App' -Target $u.Name -Action 'Reinstall removed app' -Status Already -Detail 'App is installed again.' | Out-Null
+            } else {
+                Add-WFAction -Category 'UNDO' -Type 'App' -Target $u.Name -Action 'Reinstall removed app from the Microsoft Store' -Status Info -Detail 'Click the Store link in the report (or paste it into Run - Win+R) to reinstall this app.' -Revert "ms-windows-store://pdp/?PFN=$($u.PFN)" | Out-Null
+            }
+        }
         default { Add-WFAction -Category 'UNDO' -Type 'System' -Target ([string]$u.Kind) -Action 'Unknown undo record' -Status Skipped | Out-Null }
     }
 }
@@ -2654,7 +2682,10 @@ function Invoke-ProfileUndo {
         foreach ($act in $acts) {
             if ($act.Undo) { Invoke-WFUndoRecord $act.Undo }
         }
-        Add-WFAction -Category 'UNDO' -Type 'App' -Target 'Removed apps' -Action 'Apps removed by the script are not reinstalled automatically' -Status Info -Detail 'Reinstall them from the Microsoft Store or with winget if you need them.' | Out-Null
+        if (-not @($acts | Where-Object { $_.Undo.Kind -eq 'Appx' }).Count) {
+            # Runs made before v6.3 did not record Store links for removed apps.
+            Add-WFAction -Category 'UNDO' -Type 'App' -Target 'Removed apps' -Action 'Apps removed by versions before 6.3 have no Store link' -Status Info -Detail 'If that run removed apps you need, reinstall them from the Microsoft Store.' | Out-Null
+        }
         Complete-WFUndoSource $src
         return
     }
@@ -2711,11 +2742,56 @@ function Show-WFMenu {
     Write-WFRaw " [13]  Security Hardening - Disable WPAD, remote assistance, lock screen privacy." 'Green'
 
     Write-WFRaw ""
+    Write-WFRaw " [G]   Open the graphical app (apps installer, tweaks, profiles)" 'Cyan'
+    Write-WFRaw " [Q]   Quit" 'DarkGray'
+
+    Write-WFRaw ""
     $choice = ""
-    while ($choice -notmatch '^([1-9]|1[0-3])(,\s*([1-9]|1[0-3]))*$') {
-        $choice = Read-Host "Enter your choice (1-13)"
+    while ($choice -notmatch '^\s*(([1-9]|1[0-3])(\s*,\s*([1-9]|1[0-3]))*|[GgQq])\s*$') {
+        $choice = Read-Host "Enter your choice (1-13, several like 1,8,12, G or Q)"
     }
-    return $choice
+    return $choice.Trim()
+}
+
+$script:WFProfileTitles = @{
+    '1' = 'Gaming'; '2' = 'Office & Browsing'; '3' = 'Content Creation'; '4' = 'AI & Machine Learning'
+    '5' = 'Forensic Deep Scan'; '6' = 'UNDO'; '7' = 'Ultimate Debloat'; '8' = 'Privacy Shield'
+    '9' = 'Laptop Battery Saver'; '10' = 'Network Supercharger'; '11' = 'Ultra-Deep Nuclear Debloat'
+    '12' = 'Deep System Cleanup'; '13' = 'Security Hardening'
+}
+
+function Confirm-WFProfiles {
+    # Shows what is about to run. Returns 'Run', 'Preview' or 'Cancel'.
+    param([string[]]$Profiles)
+    Write-WFRaw "`nYou selected:" 'Cyan'
+    foreach ($p in $Profiles) { Write-WFRaw ("   [{0}] {1}" -f $p, $script:WFProfileTitles[$p]) 'White' }
+    if (@($Profiles | Where-Object { $_ -in @('1', '2', '3', '4', '7', '11') }).Count) {
+        Write-WFRaw "   Includes Base Debloat: telemetry services off and consumer apps removed." 'DarkGray'
+    }
+    Write-WFRaw "   A System Restore Point is created first, and everything can be undone with profile 6." 'DarkGray'
+    while ($true) {
+        $a = Read-Host "`n[Y] Run   [P] Preview only (changes nothing)   [N] Cancel"
+        switch -Regex ($a.Trim()) {
+            '^(y|Y)$' { return 'Run' }
+            '^(p|P)$' { return 'Preview' }
+            '^(n|N)$' { return 'Cancel' }
+        }
+    }
+}
+
+function Start-WFGuiApp {
+    # Opens the graphical app in a new STA window (the GUI part of this same script).
+    $guiArgs = if ($PSCommandPath) {
+        @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', "`"$PSCommandPath`"", '-Gui')
+    } else {
+        @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-Command', "& ([scriptblock]::Create((irm '$($script:RawBase)/WinFlexSetupModern.ps1'))) -Gui")
+    }
+    try {
+        Start-Process powershell.exe -ArgumentList $guiArgs -ErrorAction Stop
+        Write-WFRaw "[OK] Opening the graphical app..." 'Green'
+    } catch {
+        Write-WFRaw "[X] Could not open the graphical app: $($_.Exception.Message)" 'Red'
+    }
 }
 
 function Start-WFOptimization {
@@ -2830,6 +2906,13 @@ function Start-WFOptimization {
 
     if ($script:WF.RebootNeeded -and -not $DryRun) {
         Write-WFRaw "[!] A system restart is recommended to complete all requested changes." 'Yellow'
+        if (-not $Silent -and -not $Worker) {
+            $r = Read-Host "Restart now? (Y/N) [Default: N]"
+            if ($r -match '^(y|Y)$') {
+                & shutdown.exe /r /t 30 /c "WinFlexSetupModern: restarting to finish applying changes." 2>&1 | Out-Null
+                Write-WFRaw "Restarting in 30 seconds. Save your work - or cancel with:  shutdown /a" 'Yellow'
+            }
+        }
     }
 }
 
@@ -2850,12 +2933,16 @@ if (-not $LibraryOnly) {
     Get-SystemHardwareAudit
 
     $chosen = $ProfileId
+    $fromMenu = $false
     if (-not $chosen) {
         if ($Silent) {
             Write-WFRaw "[X] -Silent needs -ProfileId (for example: -ProfileId 7)." 'Red'
             exit 1
         }
         $chosen = Show-WFMenu
+        $fromMenu = $true
+        if ($chosen -match '^[Qq]$') { return }
+        if ($chosen -match '^[Gg]$') { Start-WFGuiApp; return }
     }
 
     $profilesToRun = @($chosen -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
@@ -2863,6 +2950,28 @@ if (-not $LibraryOnly) {
     if ($bad.Count -gt 0) {
         Write-WFRaw "[X] Unknown profile number(s): $($bad -join ', '). Valid values are 1-13." 'Red'
         exit 1
+    }
+
+    # Interactive choice: show what will run, and offer a preview (DryRun) first.
+    $previewFirst = $false
+    if ($fromMenu -and -not $DryRun) {
+        switch (Confirm-WFProfiles $profilesToRun) {
+            'Cancel'  { Write-WFRaw "Cancelled - nothing was changed." 'Yellow'; return }
+            'Preview' { $previewFirst = $true }
+        }
+    }
+
+    if ($previewFirst) {
+        $hw = $script:WF.HW; $win11 = $script:WF.IsWin11
+        $DryRun = $true; $script:WF.DryRun = $true
+        Start-WFOptimization -SelectedProfiles $profilesToRun
+        try { Start-Process $script:WF.ReportPath } catch {}
+        $again = Read-Host "`nPreview report opened. Apply these changes for real now? (Y/N) [Default: N]"
+        if ($again -notmatch '^(y|Y)$') { Write-WFRaw "Nothing was changed." 'Yellow'; if (-not $NoPause) { Pause }; return }
+        # fresh session for the real run (the preview's actions must not be mixed in)
+        $DryRun = $false
+        New-WFSession
+        $script:WF.HW = $hw; $script:WF.IsWin11 = $win11
     }
 
     # If option 11 (Nuclear Debloat) was picked or user passed -Background, offer or run background mode
@@ -3206,12 +3315,12 @@ function Get-WFSelfPath {
 if (-not $script:isAdmin) {
     if ($scriptPath) {
         Write-Host "Elevating to Administrator..." -ForegroundColor Yellow
-        Start-Process powershell.exe -Verb RunAs -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", "`"$scriptPath`"")
+        Start-Process powershell.exe -Verb RunAs -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", "`"$scriptPath`"", "-Gui")
         exit
     } else {
         Write-Host "Elevating to Administrator..." -ForegroundColor Yellow
         try {
-            Start-Process powershell.exe -Verb RunAs -ErrorAction Stop -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm '$($script:RawBase)/WinFlexSetupModern.ps1' | iex")
+            Start-Process powershell.exe -Verb RunAs -ErrorAction Stop -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-Command", "& ([scriptblock]::Create((irm '$($script:RawBase)/WinFlexSetupModern.ps1'))) -Gui")
         } catch {
             Write-Warning "Administrator rights are required. Right-click PowerShell -> Run as Administrator, then paste the command again."
         }

@@ -1,6 +1,6 @@
 # 🚀 WinFlexSetupModern
 
-**WinFlexSetupModern** is a modern Windows setup & optimization app written in PowerShell (WPF GUI). It scans your PC's hardware, installs your apps with winget, and applies targeted optimizations based on your usage profile — with a System Restore Point, a full HTML report of every change, and one-click UNDO.
+**WinFlexSetupModern** is a Windows optimization & setup tool written in PowerShell. It scans your PC's hardware and applies targeted optimizations based on your usage profile — with a System Restore Point, a full HTML report of every change, and one-click UNDO. A graphical app (WPF) with a winget app installer is built in as well.
 
 ---
 
@@ -13,15 +13,20 @@
 irm https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master/WinFlexSetupModern.ps1 | iex
 ```
 
-Everything is in this one file — the app, its menu and the optimization engine. If PowerShell is not running as Administrator, the app asks for elevation by itself.
+The script audits your hardware and shows the profile menu:
+- Pick one profile (`1`) or several (`1,8,12`).
+- You then see exactly what will run and choose **Run**, **Preview only** (a report of what *would* change, nothing is touched) or **Cancel**.
+- Press **G** to open the graphical app instead (apps installer, tweaks, profiles).
+
+Everything is in this one file. If PowerShell is not running as Administrator, the script asks for elevation by itself.
 
 You can also download `WinFlexSetupModern.ps1` from the [latest release](https://github.com/dor2500/WinFlexSetupModern/releases/latest) and run it directly.
 
-### Advanced (console, no GUI)
+### Advanced
 
 ```powershell
-.\WinFlexSetupModern.ps1 -Console                 # profile menu in the console
-.\WinFlexSetupModern.ps1 -ProfileId 1,8,12        # run profiles directly
+.\WinFlexSetupModern.ps1 -Gui                     # open the graphical app directly
+.\WinFlexSetupModern.ps1 -ProfileId 1,8,12        # run profiles without the menu
 .\WinFlexSetupModern.ps1 -ProfileId 7 -DryRun     # preview only - changes nothing, still writes the report
 ```
 
@@ -52,6 +57,7 @@ Every run creates an interactive HTML report on the Desktop listing each service
 
 ## ⚠️ Disclaimer & Safety
 * **Restore Point**: A System Restore Point is created before any change. If it cannot be created, the engine asks before continuing.
-* **UNDO**: Profile 6 restores every recorded change, even from a run that was interrupted.
+* **UNDO**: Profile 6 restores every recorded change, even from a run that was interrupted. Removed apps get a direct Microsoft Store link in the report so they can be reinstalled in one click.
+* **Restart**: when a change needs a restart, the script offers to restart (30-second countdown, cancel with `shutdown /a`).
 * **Open Source**: The code is 100% transparent — read `WinFlexSetupModern.ps1` to see exactly which registry keys and services are modified.
 * **Usage**: Use at your own risk. This tool is intended for advanced users who want to maximize their hardware's potential.
