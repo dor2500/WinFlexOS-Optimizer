@@ -1,15 +1,15 @@
 <#
-WinFlexSetupModern - Windows setup, apps & optimization (single file)
+WinFlexSetupModern - Windows optimization with restore point, HTML report & UNDO (single file)
 Compatibility: Windows 10 / Windows 11, Windows PowerShell 5.1
 
 Run (as Administrator):
   irm https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master/WinFlexSetupModern.ps1 | iex
 
-Modes:
-  .\WinFlexSetupModern.ps1                          # console: hardware audit + profile menu (default)
-  .\WinFlexSetupModern.ps1 -Gui                     # graphical app (apps, tweaks, profiles) - also option G in the menu
+Usage:
+  .\WinFlexSetupModern.ps1                          # hardware audit + profile menu
   .\WinFlexSetupModern.ps1 -ProfileId 1,8,12        # run profiles directly (Gaming + Privacy Shield + Deep Cleanup)
   .\WinFlexSetupModern.ps1 -ProfileId 7 -DryRun     # simulate: changes nothing, still writes the HTML report
+  .\WinFlexSetupModern.ps1 -Detailed                # also print "already OK" / "not present" lines
   . .\WinFlexSetupModern.ps1 -LibraryOnly           # load the engine functions only
 
 The file is plain ASCII on purpose: 'irm | iex' keeps a UTF-8 BOM as a stray character
@@ -18,13 +18,9 @@ Hebrew text is therefore built from character codes / HTML entities.
 #>
 [CmdletBinding()]
 param(
-    # --- GUI ---
-    [switch]$Gui,                 # open the graphical app instead of the console menu
-    [switch]$SkipWelcome,         # skip the welcome screen
-    [string]$MenuPath,            # optional external menu file instead of the built-in menu
-    # --- Console engine (the default) ---
     [string]$ProfileId = '',      # "1".."13" or a comma separated list, e.g. "1,8,12"
-    [switch]$Console,             # console menu (default; kept for older commands)
+    [switch]$Console,             # console menu (always on; kept so older commands keep working)
+    [switch]$Detailed,            # print every checked item, not only the ones that changed
     [switch]$Silent,              # no prompts
     [switch]$NoPause,             # do not wait for a key at the end
     [switch]$DryRun,              # simulate everything, change nothing
@@ -35,14 +31,7 @@ param(
     [string]$ReportDir = ''       # where to save the HTML report (default: Desktop)
 )
 
-# Console engine unless the GUI was asked for. -ProfileId always means the engine (the GUI runs profiles that way).
-$script:WFEngineMode = (-not $Gui) -or [bool]($ProfileId -or $Worker -or $LibraryOnly)
-
-if ($script:WFEngineMode) {
-# ##############################################################################
-#  CONSOLE ENGINE  (profiles, restore point, HTML report, UNDO)
-# ##############################################################################
-$script:WFVersion = '6.3'
+$script:WFVersion = '6.4'
 $script:RawBase   = 'https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master'
 
 # ==============================================================================
@@ -153,13 +142,28 @@ New-WFSession
 function Get-WFTimeStamp { (Get-Date).ToString('HH:mm:ss') }
 
 function Write-WFRaw {
-    param([string]$Text, [string]$Color = 'Gray', [switch]$NoNewLine)
-    if (-not $script:WF.Quiet) {
+    # Screen + log file. -LogOnly: log only (full detail). -ScreenOnly / -NoNewLine: screen only (colored pieces of one line).
+    param([string]$Text, [string]$Color = 'Gray', [switch]$NoNewLine, [switch]$LogOnly, [switch]$ScreenOnly)
+    if (-not $script:WF.Quiet -and -not $LogOnly) {
         try {
             if ($NoNewLine) { Write-Host $Text -ForegroundColor $Color -NoNewline } else { Write-Host $Text -ForegroundColor $Color }
         } catch {}
     }
-    if ($script:WF.LogWriter) { try { $script:WF.LogWriter.WriteLine($Text) } catch {} }
+    if ($script:WF.LogWriter -and -not $NoNewLine -and -not $ScreenOnly) { try { $script:WF.LogWriter.WriteLine($Text) } catch {} }
+}
+
+function Write-WFKeyValue {
+    # "    Label     : value" with the label dimmed - used by the hardware summary and the final summary.
+    param([string]$Label, [string]$Value, [string]$Color = 'White')
+    Write-WFRaw ('    {0,-10}: ' -f $Label) 'DarkGray' -NoNewLine
+    Write-WFRaw $Value $Color -NoNewLine
+    Write-WFRaw '' -ScreenOnly
+    Write-WFRaw ('    {0,-10}: {1}' -f $Label, $Value) -LogOnly
+}
+
+function Write-WFRule {
+    param([string]$Color = 'DarkCyan')
+    Write-WFRaw ('  ' + ('-' * 68)) $Color
 }
 
 function Open-WFLog {
@@ -181,11 +185,11 @@ function Close-WFLog {
 }
 
 function Write-WFBanner {
-    param([string]$Title, [string]$Color = 'Magenta')
+    # Section title:  blank line, TITLE, thin rule.
+    param([string]$Title, [string]$Color = 'Cyan')
     Write-WFRaw ""
-    Write-WFRaw "========================================================" $Color
-    Write-WFRaw "   $Title" 'Yellow'
-    Write-WFRaw "========================================================" $Color
+    Write-WFRaw ("  " + $Title.ToUpper()) $Color
+    Write-WFRule 'DarkGray'
 }
 
 function Format-WFBytes {
@@ -253,15 +257,42 @@ function Write-WFLive {
         'Failed'   { 'Red' }
         default    { 'Gray' }
     }
+    # The log file always gets the full line.
     $line = '[{0}] [{1,-8}] {2,-12} {3}' -f $r.Time, $r.Type.ToUpper(), $label, $r.Target
     if ($r.Action) { $line += '  -  ' + $r.Action }
-    Write-WFRaw $line $color
-    $pad = '                          '
-    if (($r.Before -or $r.After) -and $r.Status -in @('Changed', 'Failed')) {
-        Write-WFRaw ("{0}{1}  ->  {2}" -f $pad, $r.Before, $r.After) 'DarkGray'
+    Write-WFRaw $line -LogOnly
+    if (($r.Before -or $r.After) -and $r.Status -in @('Changed', 'Failed')) { Write-WFRaw ("      {0}  ->  {1}" -f $r.Before, $r.After) -LogOnly }
+    if ($r.Detail) { Write-WFRaw ("      {0}" -f $r.Detail) -LogOnly }
+
+    # The screen shows what matters: changes, failures, skips and notes.
+    # "Already OK" / "Not present" only with -Detailed (they are always in the report).
+    if ($r.Status -in @('Already', 'NotFound') -and -not $Detailed) { return }
+    if ($r.Category -eq 'Audit') { return }
+    $mark = switch ($r.Status) {
+        'Changed'  { if ($r.Sim) { '~' } else { '+' } }
+        'Already'  { '=' }
+        'NotFound' { '.' }
+        'Skipped'  { '!' }
+        'Failed'   { 'x' }
+        default    { 'i' }
     }
-    if ($r.Detail -and $r.Status -in @('Changed', 'Failed', 'Skipped', 'Info')) {
-        Write-WFRaw ("{0}{1}" -f $pad, $r.Detail) 'DarkGray'
+    $text = if ($r.Action) { $r.Action } else { $r.Target }
+    if ($text.Length -gt 60) { $text = $text.Substring(0, 57) + '...' }
+    $target = [string]$r.Target
+    if ($target -and $target -ne $text) {
+        if ($target.Length -gt 34) { $target = '...' + $target.Substring($target.Length - 31) }
+    } else { $target = '' }
+    Write-WFRaw ('    {0} ' -f $mark) $color -NoNewLine
+    Write-WFRaw ('{0,-60} ' -f $text) $(if ($r.Status -in @('Changed', 'Failed', 'Skipped')) { 'White' } else { 'Gray' }) -NoNewLine
+    Write-WFRaw $target 'DarkGray' -ScreenOnly
+    if ($Detailed -and ($r.Before -or $r.After) -and $r.Status -eq 'Changed') {
+        Write-WFRaw ("        {0}  ->  {1}" -f $r.Before, $r.After) 'DarkGray'
+    }
+    # Show details for problems and notes - and for cleanup, how much space is (or would be) freed.
+    if ($r.Detail -and ($r.Status -in @('Failed', 'Skipped', 'Info') -or ($r.Status -eq 'Changed' -and $r.Type -eq 'Files'))) {
+        $d = [string]$r.Detail
+        if ($d.Length -gt 110) { $d = $d.Substring(0, 107) + '...' }
+        Write-WFRaw ("        {0}" -f $d) $(if ($r.Status -eq 'Failed') { 'DarkRed' } else { 'DarkGray' })
     }
 }
 
@@ -272,7 +303,10 @@ function Write-WFPhase {
     $script:WF.Phase = $Title
     $script:WF.PhaseStart = $script:WF.Actions.Count
     Write-WFRaw ""
-    Write-WFRaw ("--- [Step {0}] {1} ---" -f $script:WF.StepNo, $Title) 'Cyan'
+    Write-WFRaw ('  [{0,2}] ' -f $script:WF.StepNo) 'DarkCyan' -NoNewLine
+    Write-WFRaw $Title 'Cyan' -NoNewLine
+    Write-WFRaw '' -ScreenOnly
+    Write-WFRaw ('--- [Step {0}] {1} ---' -f $script:WF.StepNo, $Title) -LogOnly
 }
 
 function Close-WFPhase {
@@ -282,7 +316,11 @@ function Close-WFPhase {
     $a = @($slice | Where-Object Status -eq 'Already').Count
     $n = @($slice | Where-Object Status -eq 'NotFound').Count
     $f = @($slice | Where-Object Status -eq 'Failed').Count
-    Write-WFRaw ("    >> Step done: {0} changed | {1} already OK | {2} not present | {3} failed" -f $c, $a, $n, $f) 'DarkCyan'
+    $verb = if ($script:WF.DryRun) { 'would change' } else { 'changed' }
+    Write-WFRaw ("         {0} {1} | {2} already OK | {3} not present | " -f $c, $verb, $a, $n) 'DarkGray' -NoNewLine
+    Write-WFRaw ("{0} failed" -f $f) $(if ($f -gt 0) { 'Red' } else { 'DarkGray' }) -NoNewLine
+    Write-WFRaw '' -ScreenOnly
+    Write-WFRaw ("    >> Step done: {0} {1} | {2} already OK | {3} not present | {4} failed" -f $c, $verb, $a, $n, $f) -LogOnly
     $script:WF.Phase = ''
 }
 
@@ -1795,10 +1833,8 @@ $jsCode
 
     [System.IO.File]::WriteAllText($OutPath, $html, [System.Text.Encoding]::UTF8)
     $script:WF.ReportPath = $OutPath
-    Write-WFRaw "`n========================================================" 'Green'
-    Write-WFRaw "   [OK] HTML Optimization Report Generated Successfully!" 'Green'
-    Write-WFRaw "   Path: $OutPath" 'Cyan'
-    Write-WFRaw "========================================================`n" 'Green'
+    Write-WFRaw "HTML report saved: $OutPath" -LogOnly
+
 
     if ($OpenReport) {
         try { Start-Process $OutPath } catch {}
@@ -1813,7 +1849,7 @@ $jsCode
 # ==============================================================================
 
 function Get-SystemHardwareAudit {
-    Write-WFBanner "Phase 1: Comprehensive System & Hardware Audit" 'Magenta'
+    Write-WFBanner "This PC"
 
     $systemEnclosure = Get-CimInstance -ClassName Win32_SystemEnclosure -ErrorAction SilentlyContinue
     $chassisTypes = $systemEnclosure.ChassisTypes
@@ -1858,50 +1894,31 @@ function Get-SystemHardwareAudit {
         HasSSD = $script:hasSSD
     }
 
-    Write-WFRaw "`n[+] Detected System Configuration: $formFactorName" 'Cyan'
-    Write-WFRaw "   * Operating System: $osName (Build $($osInfo.BuildNumber))" 'Gray'
-    Write-WFRaw "   * Manufacturer & Model: $($computerSystem.Manufacturer) - $($computerSystem.Model)" 'Gray'
-    Write-WFRaw "   * Motherboard: $($baseboard.Manufacturer) $($baseboard.Product) (BIOS: $($bios.SMBIOSBIOSVersion))" 'Gray'
-
-    Write-WFRaw "`n   * CPU: $($script:cpu.Name)" 'Green'
-    Write-WFRaw "     - $($script:cpu.NumberOfCores) Cores / $($script:cpu.NumberOfLogicalProcessors) Threads | Base Clock: $($script:cpu.MaxClockSpeed) MHz" 'DarkGray'
-
-    Write-WFRaw "`n   * RAM: $($script:totalRamGB) GB Installed" 'Green'
-    $stickIdx = 1
-    foreach ($stick in $ramSticks) {
-        $stickGb = [math]::Round($stick.Capacity / 1GB, 1)
-        Write-WFRaw "     - Stick $($stickIdx): $stickGb GB | Speed: $($stick.ConfiguredClockSpeed) MHz (Maker: $($stick.Manufacturer))" 'DarkGray'
-        $stickIdx++
-    }
-
-    Write-WFRaw "`n   * GPU(s):" 'Green'
-    foreach ($gpu in $script:gpus) {
-        $vram = if ($gpu.AdapterRAM -gt 0) { "$([math]::Round($gpu.AdapterRAM / 1GB, 2)) GB VRAM" } else { "Shared RAM" }
-        Write-WFRaw "     - $($gpu.Name) [$vram] (Driver: $($gpu.DriverVersion))" 'DarkCyan'
-    }
-
-    Write-WFRaw "`n   * Storage:" 'Green'
+    # Compact one-line-per-component summary (full detail goes to the report and the forensic scan).
+    $ramSpeed = ($ramSticks | Where-Object { $_.ConfiguredClockSpeed } | Select-Object -First 1).ConfiguredClockSpeed
+    $ramTxt = "{0} GB" -f $script:totalRamGB
+    if (@($ramSticks).Count) { $ramTxt += "  ({0} x {1} GB{2})" -f @($ramSticks).Count, [math]::Round((@($ramSticks)[0].Capacity) / 1GB), $(if ($ramSpeed) { " @ $ramSpeed MHz" } else { '' }) }
+    $cpuName = ([string]$script:cpu.Name -replace '\s+', ' ').Trim()
+    Write-WFKeyValue 'PC' ("{0} {1}  [{2}]" -f $computerSystem.Manufacturer, $computerSystem.Model, $formFactorName)
+    Write-WFKeyValue 'Windows' "$osName (build $($osInfo.BuildNumber))"
+    Write-WFKeyValue 'CPU' ("{0}  ({1} cores / {2} threads)" -f $cpuName, $script:cpu.NumberOfCores, $script:cpu.NumberOfLogicalProcessors)
+    Write-WFKeyValue 'RAM' $ramTxt
+    foreach ($gpu in $script:gpus) { Write-WFKeyValue 'GPU' ("{0}  (driver {1})" -f $gpu.Name, $gpu.DriverVersion) }
     foreach ($d in $disks) {
-        Write-WFRaw "     - $($d.FriendlyName) : $([math]::Round($d.Size / 1GB, 1)) GB | Media: $($d.MediaType) $($d.BusType)" 'DarkGray'
+        $healthy = ($d.HealthStatus -eq 'Healthy')
+        $txt = "{0}  {1} GB {2}" -f $d.FriendlyName, [math]::Round($d.Size / 1GB), $(if ($d.BusType -eq 'NVMe') { 'NVMe' } else { $d.MediaType })
+        Write-WFKeyValue 'Disk' ($txt + $(if ($healthy) { '  [healthy]' } else { "  [WARNING: $($d.HealthStatus)]" })) $(if ($healthy) { 'White' } else { 'Yellow' })
     }
-
-    Write-WFRaw "`n   * Disk Health (S.M.A.R.T):" 'Green'
-    foreach ($pd in $disks) {
-        $health = if ($pd.HealthStatus -eq "Healthy") { "[Healthy]" } else { "[WARNING]" }
-        Write-WFRaw "     - $($pd.FriendlyName): $health (Status: $($pd.OperationalStatus))" 'Gray'
-    }
-
-    Write-WFRaw "`n   * Network Interfaces & Latency:" 'Green'
-    $nics = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Up" }
-    foreach ($nic in $nics) {
-        Write-WFRaw "     - $($nic.Name) ($($nic.InterfaceDescription)) - Link: $($nic.LinkSpeed)" 'Gray'
-    }
+    # Prefer the adapter that carries the default route (the real internet connection), not a virtual one.
+    $routeIf = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric | ForEach-Object { [int]$_.ifIndex })
+    $nics = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Up" } |
+        Sort-Object @{ Expression = { $i = [array]::IndexOf($routeIf, [int]$_.ifIndex); if ($i -lt 0) { 999 } else { $i } } })
     $ping = Test-Connection -ComputerName 8.8.8.8 -Count 1 -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($ping) {
-        # Windows PowerShell exposes ResponseTime, PowerShell 7 exposes Latency.
-        $ms = if ($null -ne $ping.ResponseTime) { $ping.ResponseTime } else { $ping.Latency }
-        Write-WFRaw "     - Internet Ping (8.8.8.8): $ms ms" 'Cyan'
-    }
+    # Windows PowerShell exposes ResponseTime, PowerShell 7 exposes Latency.
+    $ms = if ($ping) { if ($null -ne $ping.ResponseTime) { $ping.ResponseTime } else { $ping.Latency } } else { $null }
+    $netTxt = if ($nics.Count) { "{0}  {1}" -f $nics[0].Name, $nics[0].LinkSpeed } else { 'no active adapter' }
+    $netTxt += if ($null -ne $ms) { "  | internet ping $ms ms" } else { '  | no internet reply' }
+    Write-WFKeyValue 'Network' $netTxt $(if ($null -ne $ms) { 'White' } else { 'Yellow' })
 
     Add-WFAction -Category 'Audit' -Type 'System' -Target 'Hardware Specification' -Action "Audited: $($script:cpu.Name), $($script:totalRamGB)GB RAM, $gpuDesc" -Status Info | Out-Null
 }
@@ -2118,7 +2135,7 @@ function Invoke-BaseDebloat {
 
 function Invoke-ProfileGaming {
     [void]$script:WF.ProfileNames.Add("Gaming")
-    Write-WFPhase "Profile: 100000% Gaming, Latency & ASUS Tamer (Max FPS, Zero Mouse Accel, Minimal Ping)"
+    Write-WFPhase "Profile: Gaming (max FPS, raw mouse input, low latency)"
 
     # Windows Game Mode & GameDVR
     Set-WFReg -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 1 -Type DWord -Desc "Enable Windows Game Mode" -Category "Gaming"
@@ -2202,7 +2219,7 @@ function Invoke-ProfileGaming {
     $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue | Select-Object -First 1
     $isAsus = ($bb.Manufacturer -match 'ASUS|ASUSTeK') -or ($cs.Manufacturer -match 'ASUS|ASUSTeK')
     if ($isAsus) {
-        Write-WFPhase "ASUS Gaming Rig Detected: Applying Deep Armoury Crate & Anti-Stutter Tamer"
+        Write-WFPhase "ASUS hardware detected: taming Armoury Crate services"
         # 1. Stop GameFirst
         @("AsusGameFirstService", "ROG Game First", "cFosSpeed", "cFosSpeedSvc") | ForEach-Object {
             Disable-WFService -Name $_ -Desc "Disable ASUS GameFirst network latency killer" -Category "Network"
@@ -2723,81 +2740,116 @@ function Invoke-ProfileUndo {
 # 3. Interactive Menu & Pipeline Runner
 # ==============================================================================
 
+$script:WFProfileTitles = @{
+    '1' = 'Gaming'; '2' = 'Office & Browsing'; '3' = 'Content Creation'; '4' = 'AI & Machine Learning'
+    '5' = 'Forensic Deep Scan'; '6' = 'UNDO last run'; '7' = 'Ultimate Debloat'; '8' = 'Privacy Shield'
+    '9' = 'Laptop Battery Saver'; '10' = 'Network Supercharger'; '11' = 'Nuclear Debloat'
+    '12' = 'Deep System Cleanup'; '13' = 'Security Hardening'
+}
+$script:WFProfileDesc = @{
+    '1' = 'Ultimate plan, raw mouse input, low-latency network, HAGS'
+    '2' = 'Balanced power plan, Game Mode off'
+    '3' = 'High Performance plan, stable background rendering'
+    '4' = 'Long paths, compute priority, AI toolchain scan'
+    '5' = 'Read-only report: drivers, software, AI model files'
+    '6' = 'Restores everything the last run changed'
+    '7' = 'Telemetry services off, consumer apps removed'
+    '8' = 'Telemetry level 0, tracking tasks off, domains blocked'
+    '9' = 'Power Saver, CPU 80% on battery, faster sleep'
+    '10' = 'TCP tuning, LLMNR off, DNS cache flush'
+    '11' = 'Debloat + Privacy + Copilot/Widgets/Edge + cleanup'
+    '12' = 'Temp, update cache, crash dumps, SSD TRIM'
+    '13' = 'WPAD, Remote Assistance and AutoPlay off'
+}
+
+function Get-WFLastRun {
+    # Newest completed real run that can still be undone (not a preview, not an UNDO run).
+    $dir = Join-Path $env:ProgramData 'WinFlexOS\State'
+    if (-not (Test-Path -LiteralPath $dir)) { return $null }
+    foreach ($f in (Get-ChildItem -LiteralPath $dir -Filter 'run-*.json' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+        try {
+            $st = [System.IO.File]::ReadAllText($f.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            if ($st.DryRun -or $st.IsUndo) { continue }
+            return @{ When = $f.LastWriteTime; Profiles = (@($st.Profiles) -join ', ') }
+        } catch { continue }
+    }
+    return $null
+}
+
+function Write-WFMenuItem {
+    # One menu cell: right-aligned number + name, padded to a fixed column width.
+    param([string]$Id, [int]$Width = 34, [string]$Color = 'White')
+    if (-not $Id) { Write-WFRaw (' ' * $Width) -NoNewLine; return }
+    $name = $script:WFProfileTitles[$Id]
+    Write-WFRaw ('    {0,2}  ' -f $Id) 'Yellow' -NoNewLine
+    Write-WFRaw ($name.PadRight($Width - 8)) $Color -NoNewLine
+}
+
 function Show-WFMenu {
-    Write-WFBanner "Phase 2: Define Usage Profile (Customization & Debloat)" 'Magenta'
-    Write-WFRaw "Select optimization profile (Enter a number 1-13 or comma-separated list like 1,8,12):`n" 'Cyan'
-
-    Write-WFRaw " [1]   Gaming - Max performance, zero mouse accel, lower network latency."
-    Write-WFRaw " [2]   Office & Browsing - Stability, power saving, bloatware removal."
-    Write-WFRaw " [3]   Content Creation - Maximize stable resources for rendering/production."
-    Write-WFRaw " [4]   AI & Machine Learning - Deep system scan, max RAM/VRAM utilization, Long Paths."
-    Write-WFRaw " [5]   Forensic Deep Scan - Full driver & folder analysis (~5-10 min)."
-    Write-WFRaw " [6]   UNDO - Restore system settings to recorded state or Windows defaults."
-    Write-WFRaw " [7]   Ultimate Debloat - Standard telemetry and consumer bloat purge."
-    Write-WFRaw " [8]   Privacy Shield - Hosts block, telemetry levels, typing tracking block."
-    Write-WFRaw " [9]   Laptop Battery Saver - Aggressive processor and display power savings."
-    Write-WFRaw " [10]  Network Supercharger - TCP/IP stack tune, DNS cache flush, heuristics off."
-    Write-WFRaw " [11]   Ultra-Deep Nuclear Debloat - Extreme stripping (Edge, Copilot, Widgets, background tasks)." 'Red'
-    Write-WFRaw " [12]  Deep System Cleanup - Temp, Windows Update cache, crash dumps, SSD TRIM." 'Yellow'
-    Write-WFRaw " [13]  Security Hardening - Disable WPAD, remote assistance, lock screen privacy." 'Green'
-
-    Write-WFRaw ""
-    Write-WFRaw " [G]   Open the graphical app (apps installer, tweaks, profiles)" 'Cyan'
-    Write-WFRaw " [Q]   Quit" 'DarkGray'
-
-    Write-WFRaw ""
+    Write-WFBanner "Choose a profile"
+    $groups = @(
+        @{ Left = 'PERFORMANCE'; L = @('1', '2', '3', '4'); Right = 'PRIVACY & DEBLOAT'; R = @('7', '8', '11', '13') },
+        @{ Left = 'MAINTENANCE'; L = @('9', '10', '12'); Right = 'TOOLS'; R = @('5', '6') }
+    )
+    foreach ($g in $groups) {
+        Write-WFRaw ('    {0,-34}' -f $g.Left) 'DarkCyan' -NoNewLine
+        Write-WFRaw $g.Right 'DarkCyan'
+        $rows = [math]::Max($g.L.Count, $g.R.Count)
+        for ($i = 0; $i -lt $rows; $i++) {
+            Write-WFMenuItem $(if ($i -lt $g.L.Count) { $g.L[$i] } else { '' })
+            $rid = if ($i -lt $g.R.Count) { $g.R[$i] } else { '' }
+            Write-WFMenuItem $rid -Color $(if ($rid -eq '11') { 'Red' } else { 'White' })
+            Write-WFRaw '' -ScreenOnly
+        }
+        Write-WFRaw ''
+    }
+    $last = Get-WFLastRun
+    if ($last) {
+        Write-WFRaw ('    Last run: {0:dd/MM/yyyy HH:mm}  ({1})  - undo with 6' -f $last.When, $last.Profiles) 'DarkGray'
+        Write-WFRaw ''
+    }
     $choice = ""
-    while ($choice -notmatch '^\s*(([1-9]|1[0-3])(\s*,\s*([1-9]|1[0-3]))*|[GgQq])\s*$') {
-        $choice = Read-Host "Enter your choice (1-13, several like 1,8,12, G or Q)"
+    while ($choice -notmatch '^\s*(([1-9]|1[0-3])(\s*,\s*([1-9]|1[0-3]))*|[Qq])\s*$') {
+        if ($choice) { Write-WFRaw "    '$choice' is not a valid choice." 'Yellow' }
+        $choice = Read-Host "  Type a number, several like 1,8,12 - or Q to quit"
     }
     return $choice.Trim()
 }
 
-$script:WFProfileTitles = @{
-    '1' = 'Gaming'; '2' = 'Office & Browsing'; '3' = 'Content Creation'; '4' = 'AI & Machine Learning'
-    '5' = 'Forensic Deep Scan'; '6' = 'UNDO'; '7' = 'Ultimate Debloat'; '8' = 'Privacy Shield'
-    '9' = 'Laptop Battery Saver'; '10' = 'Network Supercharger'; '11' = 'Ultra-Deep Nuclear Debloat'
-    '12' = 'Deep System Cleanup'; '13' = 'Security Hardening'
-}
-
 function Confirm-WFProfiles {
-    # Shows what is about to run. Returns 'Run', 'Preview' or 'Cancel'.
+    # Shows what is about to run. Returns 'Run', 'Preview' or 'Back'.
     param([string[]]$Profiles)
-    Write-WFRaw "`nYou selected:" 'Cyan'
-    foreach ($p in $Profiles) { Write-WFRaw ("   [{0}] {1}" -f $p, $script:WFProfileTitles[$p]) 'White' }
-    if (@($Profiles | Where-Object { $_ -in @('1', '2', '3', '4', '7', '11') }).Count) {
-        Write-WFRaw "   Includes Base Debloat: telemetry services off and consumer apps removed." 'DarkGray'
+    Write-WFBanner "You selected"
+    foreach ($p in $Profiles) {
+        Write-WFRaw ('    {0,2}  ' -f $p) 'Yellow' -NoNewLine
+        Write-WFRaw ($script:WFProfileTitles[$p].PadRight(24)) 'White' -NoNewLine
+        Write-WFRaw $script:WFProfileDesc[$p] 'DarkGray'
     }
-    Write-WFRaw "   A System Restore Point is created first, and everything can be undone with profile 6." 'DarkGray'
+    Write-WFRaw ''
+    if (@($Profiles | Where-Object { $_ -in @('1', '2', '3', '4', '7', '11') }).Count) {
+        Write-WFRaw '    Also runs Base Debloat: telemetry services off, consumer apps removed.' 'DarkGray'
+    }
+    if ($Profiles -contains '11') { Write-WFRaw '    Nuclear Debloat is the strongest profile - consider a preview first.' 'Red' }
+    Write-WFRaw '    A System Restore Point is created first. Everything can be undone with 6.' 'DarkGray'
+    Write-WFRaw ''
     while ($true) {
-        $a = Read-Host "`n[Y] Run   [P] Preview only (changes nothing)   [N] Cancel"
+        Write-WFRaw '  [Y] Run   ' 'Green' -NoNewLine
+        Write-WFRaw '[P] Preview only - changes nothing   ' 'Cyan' -NoNewLine
+        Write-WFRaw '[B] Back to menu' 'DarkGray'
+        $a = Read-Host '  Your choice'
         switch -Regex ($a.Trim()) {
             '^(y|Y)$' { return 'Run' }
             '^(p|P)$' { return 'Preview' }
-            '^(n|N)$' { return 'Cancel' }
+            '^(b|B|n|N)$' { return 'Back' }
         }
-    }
-}
-
-function Start-WFGuiApp {
-    # Opens the graphical app in a new STA window (the GUI part of this same script).
-    $guiArgs = if ($PSCommandPath) {
-        @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', "`"$PSCommandPath`"", '-Gui')
-    } else {
-        @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-Command', "& ([scriptblock]::Create((irm '$($script:RawBase)/WinFlexSetupModern.ps1'))) -Gui")
-    }
-    try {
-        Start-Process powershell.exe -ArgumentList $guiArgs -ErrorAction Stop
-        Write-WFRaw "[OK] Opening the graphical app..." 'Green'
-    } catch {
-        Write-WFRaw "[X] Could not open the graphical app: $($_.Exception.Message)" 'Red'
     }
 }
 
 function Start-WFOptimization {
     param(
         [string[]]$SelectedProfiles,
-        [switch]$AsBackground
+        [switch]$AsBackground,
+        [switch]$NoReportPrompt     # the caller opens the report itself (preview flow)
     )
 
     $SelectedProfiles = @($SelectedProfiles | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
@@ -2899,18 +2951,39 @@ function Start-WFOptimization {
         Close-WFLog
     }
 
-    Write-WFBanner "Execution Completed!" 'Green'
-    Write-WFRaw "A detailed interactive HTML report with exact details of every modified component," 'Green'
-    Write-WFRaw "disabled service, and removed package was saved to:" 'Green'
-    Write-WFRaw "  $reportFile`n" 'Cyan'
+    # ---- final summary --------------------------------------------------------
+    $all = @($script:WF.Actions)
+    $nChanged = @($all | Where-Object Status -eq 'Changed').Count
+    $nAlready = @($all | Where-Object Status -eq 'Already').Count
+    $nMissing = @($all | Where-Object Status -eq 'NotFound').Count
+    $nFailed  = @($all | Where-Object Status -eq 'Failed').Count
+    $secs = [math]::Round(((Get-Date) - $script:WF.Started).TotalSeconds)
+    if ($DryRun) { Write-WFBanner "Preview finished - nothing was changed" 'Cyan' } else { Write-WFBanner "Done" 'Green' }
+    Write-WFKeyValue $(if ($DryRun) { 'Would chg' } else { 'Changed' }) $nChanged 'Green'
+    Write-WFKeyValue 'Already OK' $nAlready 'Gray'
+    Write-WFKeyValue 'Not here' $nMissing 'Gray'
+    Write-WFKeyValue 'Failed' $nFailed $(if ($nFailed) { 'Red' } else { 'Gray' })
+    if ($script:WF.BytesFreed -gt 0) { Write-WFKeyValue 'Freed' (Format-WFBytes $script:WF.BytesFreed) 'Green' }
+    Write-WFKeyValue 'Time' ("{0} s" -f $secs) 'Gray'
+    Write-WFKeyValue 'Report' $reportFile 'Cyan'
+    if ($script:WF.LogFile) { Write-WFKeyValue 'Log' $script:WF.LogFile 'DarkGray' }
+    if (-not $DryRun -and $nChanged -gt 0) { Write-WFKeyValue 'Undo' 'run the script again and choose 6' 'DarkGray' }
+    if ($nFailed) { Write-WFRaw '    Failed items are listed in red in the report (filter: Failed).' 'Yellow' }
+    Write-WFRaw ''
+
+    $interactive = -not $Silent -and -not $Worker
+    if ($interactive -and -not $OpenReport -and -not $NoReportPrompt) {
+        $o = Read-Host "  Open the report now? (Y/N) [Default: Y]"
+        if ($o -notmatch '^(n|N)$') { try { Start-Process $reportFile } catch {} }
+    }
 
     if ($script:WF.RebootNeeded -and -not $DryRun) {
-        Write-WFRaw "[!] A system restart is recommended to complete all requested changes." 'Yellow'
-        if (-not $Silent -and -not $Worker) {
-            $r = Read-Host "Restart now? (Y/N) [Default: N]"
+        Write-WFRaw "  [!] A restart is needed to finish applying some changes." 'Yellow'
+        if ($interactive) {
+            $r = Read-Host "  Restart now? (Y/N) [Default: N]"
             if ($r -match '^(y|Y)$') {
                 & shutdown.exe /r /t 30 /c "WinFlexSetupModern: restarting to finish applying changes." 2>&1 | Out-Null
-                Write-WFRaw "Restarting in 30 seconds. Save your work - or cancel with:  shutdown /a" 'Yellow'
+                Write-WFRaw "  Restarting in 30 seconds. Save your work - or cancel with:  shutdown /a" 'Yellow'
             }
         }
     }
@@ -2921,65 +2994,64 @@ function Start-WFOptimization {
 # ==============================================================================
 if (-not $LibraryOnly) {
     if (-not $Worker) { Clear-Host }
-    Write-WFRaw "`n   ============================================================   " 'Cyan'
-    Write-WFRaw "   [ WinFlexOS Smart Hardware Optimization & Privacy Suite v$($script:WFVersion) ]   " 'Green'
-    Write-WFRaw "   ============================================================`n" 'Cyan'
+    Write-WFRaw ''
+    Write-WFRaw '  WinFlexSetupModern ' 'Cyan' -NoNewLine
+    Write-WFRaw "v$($script:WFVersion)" 'DarkCyan'
+    Write-WFRaw '  Windows optimization  |  restore point  |  HTML report  |  UNDO' 'DarkGray'
 
     if ($DryRun -and -not $isAdmin) {
-        Write-WFRaw "[!] DRY RUN without Administrator rights: apps, features and some services cannot be read," 'Yellow'
-        Write-WFRaw "    so the report may list them as 'Not present'. Run as Administrator for an accurate preview." 'Yellow'
+        Write-WFRaw ''
+        Write-WFRaw "  [!] Preview without Administrator rights: apps, features and some services cannot be read," 'Yellow'
+        Write-WFRaw "      so the report may list them as 'Not here'. Run as Administrator for an accurate preview." 'Yellow'
     }
 
     Get-SystemHardwareAudit
 
-    $chosen = $ProfileId
-    $fromMenu = $false
-    if (-not $chosen) {
-        if ($Silent) {
-            Write-WFRaw "[X] -Silent needs -ProfileId (for example: -ProfileId 7)." 'Red'
+    $previewFirst = $false
+    if ($ProfileId) {
+        $profilesToRun = @($ProfileId -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+        $bad = @($profilesToRun | Where-Object { $_ -notmatch '^([1-9]|1[0-3])$' })
+        if ($bad.Count -gt 0) {
+            Write-WFRaw "  [X] Unknown profile number(s): $($bad -join ', '). Valid values are 1-13." 'Red'
             exit 1
         }
-        $chosen = Show-WFMenu
-        $fromMenu = $true
-        if ($chosen -match '^[Qq]$') { return }
-        if ($chosen -match '^[Gg]$') { Start-WFGuiApp; return }
-    }
-
-    $profilesToRun = @($chosen -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-    $bad = @($profilesToRun | Where-Object { $_ -notmatch '^([1-9]|1[0-3])$' })
-    if ($bad.Count -gt 0) {
-        Write-WFRaw "[X] Unknown profile number(s): $($bad -join ', '). Valid values are 1-13." 'Red'
-        exit 1
-    }
-
-    # Interactive choice: show what will run, and offer a preview (DryRun) first.
-    $previewFirst = $false
-    if ($fromMenu -and -not $DryRun) {
-        switch (Confirm-WFProfiles $profilesToRun) {
-            'Cancel'  { Write-WFRaw "Cancelled - nothing was changed." 'Yellow'; return }
-            'Preview' { $previewFirst = $true }
+    } else {
+        if ($Silent) {
+            Write-WFRaw "  [X] -Silent needs -ProfileId (for example: -ProfileId 7)." 'Red'
+            exit 1
+        }
+        # Menu -> summary -> Run / Preview / Back (Back returns to the menu)
+        while ($true) {
+            $chosen = Show-WFMenu
+            if ($chosen -match '^[Qq]$') { Write-WFRaw '  Bye - nothing was changed.' 'DarkGray'; return }
+            $profilesToRun = @($chosen -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' } | Select-Object -Unique)
+            if ($DryRun) { break }
+            $decision = Confirm-WFProfiles $profilesToRun
+            if ($decision -eq 'Back') { continue }
+            $previewFirst = ($decision -eq 'Preview')
+            break
         }
     }
 
     if ($previewFirst) {
         $hw = $script:WF.HW; $win11 = $script:WF.IsWin11
         $DryRun = $true; $script:WF.DryRun = $true
-        Start-WFOptimization -SelectedProfiles $profilesToRun
+        Start-WFOptimization -SelectedProfiles $profilesToRun -NoReportPrompt
         try { Start-Process $script:WF.ReportPath } catch {}
-        $again = Read-Host "`nPreview report opened. Apply these changes for real now? (Y/N) [Default: N]"
-        if ($again -notmatch '^(y|Y)$') { Write-WFRaw "Nothing was changed." 'Yellow'; if (-not $NoPause) { Pause }; return }
+        $again = Read-Host "`n  The preview report is open. Apply these changes for real now? (Y/N) [Default: N]"
+        if ($again -notmatch '^(y|Y)$') { Write-WFRaw '  Nothing was changed.' 'Yellow'; if (-not $NoPause) { Pause }; return }
         # fresh session for the real run (the preview's actions must not be mixed in)
         $DryRun = $false
         New-WFSession
         $script:WF.HW = $hw; $script:WF.IsWin11 = $win11
     }
 
-    # If option 11 (Nuclear Debloat) was picked or user passed -Background, offer or run background mode
+    # Nuclear Debloat (11) can run in a hidden background process
     $runBg = $false
     if ($Background) {
         $runBg = $true
     } elseif ($profilesToRun -contains "11" -and -not $Silent -and $PSCommandPath) {
-        $bgChoice = Read-Host "`nRun Ultra-Deep Nuclear Debloat in the background? (Y/N) [Default: Y]"
+        $bgChoice = Read-Host "`n  Run Nuclear Debloat in the background? (Y/N) [Default: Y]"
         if ($bgChoice -ne 'N' -and $bgChoice -ne 'n') {
             $runBg = $true
         }
@@ -2988,1478 +3060,7 @@ if (-not $LibraryOnly) {
     Start-WFOptimization -SelectedProfiles $profilesToRun -AsBackground:$runBg
 
     if (-not $NoPause -and -not $Worker) {
+        Write-WFRaw ''
         Pause
     }
-}
-
-} else {
-# ##############################################################################
-#  GUI
-# ##############################################################################
-function Initialize-WFMenuData {
-    $script:Categories = @(
-        [pscustomobject]@{
-            TitleEn = "System Tweaks & AI"
-            TitleHe = "$(-join [char[]]@(0x05D0,0x05D5,0x05E4,0x05D8,0x05D9,0x05DE,0x05D9,0x05D6,0x05E6,0x05D9,0x05D4)) $(-join [char[]]@(0x05D5,0x05E4,0x05D9,0x05EA,0x05D5,0x05D7))"
-            Key = "tweaks"
-            Icon = "$([char]0xE770)"
-            Items = @(
-                [pscustomobject]@{ Name = "Block Ads & App Suggestions"; TweakId = "NoConsumerContent"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Classic Right-Click Menu (Win11)"; TweakId = "ClassicContextMenu"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Clean Temp & Cache Files"; TweakId = "ClearTemp"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Clean Windows Update Cache"; TweakId = "CleanupWinUpdate"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Disable Windows Copilot"; TweakId = "DisableCopilot"; IsTweak = $true }
-                [pscustomobject]@{ Name = "ASUS Armoury Crate & ROG Stutter Fix"; TweakId = "AsusGamingFix"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Reset Network (DNS & Winsock)"; TweakId = "NetworkReset"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Show Hidden Files & Extensions"; TweakId = "ShowHiddenFiles"; IsTweak = $true }
-                [pscustomobject]@{ Name = "SSD Trim & Optimization"; TweakId = "SSDOptimize"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Windows Dark Mode"; TweakId = "DarkMode"; IsTweak = $true }
-            )
-        },
-        [pscustomobject]@{
-            TitleEn = "Browsers"
-            TitleHe = "$(-join [char[]]@(0x05D3,0x05E4,0x05D3,0x05E4,0x05E0,0x05D9,0x05DD))"
-            Key = "browsers"
-            Icon = "$([char]0xE774)"
-            Items = @(
-                [pscustomobject]@{ Name = "Arc Browser"; WingetId = "TheBrowserCompany.Arc" }
-                [pscustomobject]@{ Name = "Brave"; WingetId = "Brave.Brave" }
-                [pscustomobject]@{ Name = "DuckDuckGo"; WingetId = "DuckDuckGo.Desktop" }
-                [pscustomobject]@{ Name = "Floorp"; WingetId = "Ablaze.Floorp" }
-                [pscustomobject]@{ Name = "Google Chrome"; WingetId = "Google.Chrome" }
-                [pscustomobject]@{ Name = "LibreWolf"; WingetId = "LibreWolf.LibreWolf" }
-                [pscustomobject]@{ Name = "Microsoft Edge"; WingetId = "Microsoft.Edge" }
-                [pscustomobject]@{ Name = "Mozilla Firefox"; WingetId = "Mozilla.Firefox" }
-                [pscustomobject]@{ Name = "Mullvad Browser"; WingetId = "MullvadVPN.MullvadBrowser" }
-                [pscustomobject]@{ Name = "Opera GX"; WingetId = "Opera.OperaGX" }
-                [pscustomobject]@{ Name = "Sidekick Browser"; WingetId = "Sidekick.Sidekick" }
-                [pscustomobject]@{ Name = "Thorium Browser"; WingetId = "Alex313031.Thorium" }
-                [pscustomobject]@{ Name = "Tor Browser"; WingetId = "TorProject.TorBrowser" }
-                [pscustomobject]@{ Name = "Vivaldi"; WingetId = "VivaldiTechnologies.Vivaldi" }
-                [pscustomobject]@{ Name = "Waterfox"; WingetId = "Waterfox.Waterfox" }
-                [pscustomobject]@{ Name = "Yandex Browser"; WingetId = "Yandex.Yandex" }
-                [pscustomobject]@{ Name = "Zen Browser"; WingetId = "Zen-Team.Zen-Browser" }
-            )
-        },
-        [pscustomobject]@{
-            TitleEn = "Media & Audio"
-            TitleHe = "$(-join [char[]]@(0x05DE,0x05D3,0x05D9,0x05D4)) $(-join [char[]]@(0x05D5,0x05E1,0x05D0,0x05D5,0x05E0,0x05D3))"
-            Key = "media"
-            Icon = "$([char]0xE189)"
-            Items = @(
-                [pscustomobject]@{ Name = "AIMP"; WingetId = "AIMP.AIMP" }
-                [pscustomobject]@{ Name = "Audacity"; WingetId = "Audacity.Audacity" }
-                [pscustomobject]@{ Name = "CapCut"; WingetId = "Bytedance.CapCut" }
-                [pscustomobject]@{ Name = "EarTrumpet"; WingetId = "FileTrekker.EarTrumpet" }
-                [pscustomobject]@{ Name = "Foobar2000"; WingetId = "PeterPawlowski.foobar2000" }
-                [pscustomobject]@{ Name = "GOM Player"; WingetId = "GOMLab.GOMPlayer" }
-                [pscustomobject]@{ Name = "HandBrake"; WingetId = "HandBrake.HandBrake" }
-                [pscustomobject]@{ Name = "iTunes"; WingetId = "Apple.iTunes" }
-                [pscustomobject]@{ Name = "K-Lite Codec Pack (Mega)"; WingetId = "CodecGuide.K-LiteCodecPack.Mega" }
-                [pscustomobject]@{ Name = "Kodi"; WingetId = "XBMCFoundation.Kodi" }
-                [pscustomobject]@{ Name = "MediaMonkey"; WingetId = "Ventis.MediaMonkey" }
-                [pscustomobject]@{ Name = "MPC-HC Player"; WingetId = "clsid2.mpc-hc" }
-                [pscustomobject]@{ Name = "OBS Studio"; WingetId = "OBSProject.OBSStudio" }
-                [pscustomobject]@{ Name = "Plex Media Server"; WingetId = "Plex.PlexMediaServer" }
-                [pscustomobject]@{ Name = "Spotify"; WingetId = "Spotify.Spotify" }
-                [pscustomobject]@{ Name = "Tenacity (Audacity Alt)"; WingetId = "tenacityteam.tenacity" }
-                [pscustomobject]@{ Name = "VLC Media Player"; WingetId = "VideoLAN.VLC" }
-                [pscustomobject]@{ Name = "Winamp"; WingetId = "Radionomy.Winamp" }
-            )
-        },
-        [pscustomobject]@{
-            TitleEn = "Design & Creativity"
-            TitleHe = "$(-join [char[]]@(0x05E2,0x05D9,0x05E6,0x05D5,0x05D1)) $(-join [char[]]@(0x05D5,0x05D9,0x05E6,0x05D9,0x05E8,0x05D4))"
-            Key = "design"
-            Icon = "$([char]0xE115)"
-            Items = @(
-                [pscustomobject]@{ Name = "Blender"; WingetId = "BlenderFoundation.Blender" }
-                [pscustomobject]@{ Name = "DaVinci Resolve"; WingetId = "BlackmagicDesign.DaVinciResolve" }
-                [pscustomobject]@{ Name = "Figma"; WingetId = "Figma.Figma" }
-                [pscustomobject]@{ Name = "GIMP"; WingetId = "GIMP.GIMP" }
-                [pscustomobject]@{ Name = "Inkscape"; WingetId = "Inkscape.Inkscape" }
-                [pscustomobject]@{ Name = "IrfanView"; WingetId = "IrfanSkiljan.IrfanView" }
-                [pscustomobject]@{ Name = "Krita"; WingetId = "KDE.Krita" }
-                [pscustomobject]@{ Name = "Paint.NET"; WingetId = "dotPDNLLC.paintdotnet" }
-                [pscustomobject]@{ Name = "ShareX"; WingetId = "ShareX.ShareX" }
-            )
-        },
-        [pscustomobject]@{
-            TitleEn = "Gaming & Launchers"
-            TitleHe = "$(-join [char[]]@(0x05D2,0x05D9,0x05D9,0x05DE,0x05D9,0x05E0,0x05D2)) $(-join [char[]]@(0x05D5,0x05DE,0x05E9,0x05D2,0x05E8,0x05D9,0x05DD))"
-            Key = "gaming"
-            Icon = "$([char]0xE7FC)"
-            Items = @(
-                [pscustomobject]@{ Name = "Amazon Games"; WingetId = "Amazon.Games" }
-                [pscustomobject]@{ Name = "Battle.net"; WingetId = "Blizzard.BattleNet" }
-                [pscustomobject]@{ Name = "CurseForge"; WingetId = "Overwolf.CurseForge" }
-                [pscustomobject]@{ Name = "EA app"; WingetId = "ElectronicArts.EADesktop" }
-                [pscustomobject]@{ Name = "Epic Games Launcher"; WingetId = "EpicGames.EpicGamesLauncher" }
-                [pscustomobject]@{ Name = "GOG Galaxy"; WingetId = "GOG.Galaxy" }
-                [pscustomobject]@{ Name = "Logitech G HUB"; WingetId = "Logitech.GHUB" }
-                [pscustomobject]@{ Name = "Minecraft Launcher"; WingetId = "Mojang.MinecraftLauncher" }
-                [pscustomobject]@{ Name = "Moonlight Game Streaming"; WingetId = "MoonlightGameStreamingProject.Moonlight" }
-                [pscustomobject]@{ Name = "MSI Afterburner"; WingetId = "Guru3D.Afterburner" }
-                [pscustomobject]@{ Name = "NVIDIA GeForce NOW"; WingetId = "Nvidia.GeForceNOW" }
-                [pscustomobject]@{ Name = "Osu!"; WingetId = "ppy.osu" }
-                [pscustomobject]@{ Name = "Overwolf"; WingetId = "Overwolf.Overwolf" }
-                [pscustomobject]@{ Name = "Parsec"; WingetId = "Parsec.Parsec" }
-                [pscustomobject]@{ Name = "Playnite (Game Manager)"; WingetId = "JosefNemec.Playnite" }
-                [pscustomobject]@{ Name = "Razer Synapse 3"; WingetId = "Razer.Synapse" }
-                [pscustomobject]@{ Name = "RetroArch"; WingetId = "Libretro.RetroArch" }
-                [pscustomobject]@{ Name = "Riot Client"; WingetId = "RiotGames.RiotClient" }
-                [pscustomobject]@{ Name = "Roblox"; WingetId = "Roblox.Roblox" }
-                [pscustomobject]@{ Name = "Steam"; WingetId = "Valve.Steam" }
-                [pscustomobject]@{ Name = "Twitch"; WingetId = "Twitch.Twitch" }
-                [pscustomobject]@{ Name = "Ubisoft Connect"; WingetId = "Ubisoft.Connect" }
-                [pscustomobject]@{ Name = "Xbox App"; WingetId = "Microsoft.XboxApp" }
-            )
-        },
-        [pscustomobject]@{
-            TitleEn = "Communication & Chat"
-            TitleHe = "$(-join [char[]]@(0x05EA,0x05E7,0x05E9,0x05D5,0x05E8,0x05EA)) $(-join [char[]]@(0x05D5,0x05E6))'$(-join [char[]]@(0x05D0,0x05D8))"
-            Key = "chat"
-            Icon = "$([char]0xE717)"
-            Items = @(
-                [pscustomobject]@{ Name = "Discord"; WingetId = "Discord.Discord" }
-                [pscustomobject]@{ Name = "Microsoft Teams"; WingetId = "Microsoft.Teams" }
-                [pscustomobject]@{ Name = "Signal"; WingetId = "OpenWhisperSystems.Signal" }
-                [pscustomobject]@{ Name = "Skype"; WingetId = "Microsoft.Skype" }
-                [pscustomobject]@{ Name = "Slack"; WingetId = "SlackTechnologies.Slack" }
-                [pscustomobject]@{ Name = "Telegram"; WingetId = "Telegram.TelegramDesktop" }
-                [pscustomobject]@{ Name = "WhatsApp"; WingetId = "WhatsApp.WhatsApp" }
-                [pscustomobject]@{ Name = "Zoom"; WingetId = "Zoom.Zoom" }
-            )
-        },
-        [pscustomobject]@{
-            TitleEn = "Development Tools"
-            TitleHe = "$(-join [char[]]@(0x05DB,0x05DC,0x05D9)) $(-join [char[]]@(0x05E4,0x05D9,0x05EA,0x05D5,0x05D7))"
-            Key = "dev"
-            Icon = "$([char]0xE943)"
-            Items = @(
-                [pscustomobject]@{ Name = "Android Studio"; WingetId = "Google.AndroidStudio" }
-                [pscustomobject]@{ Name = "Cursor (AI Code Editor)"; WingetId = "Cursor.Cursor" }
-                [pscustomobject]@{ Name = "DBeaver Community"; WingetId = "dbeaver.dbeaver" }
-                [pscustomobject]@{ Name = "Git"; WingetId = "Git.Git" }
-                [pscustomobject]@{ Name = "GitHub Desktop"; WingetId = "GitHub.GitHubDesktop" }
-                [pscustomobject]@{ Name = "HeidiSQL"; WingetId = "HeidiSQL.HeidiSQL" }
-                [pscustomobject]@{ Name = "IntelliJ IDEA Community"; WingetId = "JetBrains.IntelliJIDEA.Community" }
-                [pscustomobject]@{ Name = "LM Studio"; WingetId = "ElementLabs.LMStudio" }
-                [pscustomobject]@{ Name = "MySQL Workbench"; WingetId = "Oracle.MySQLWorkbench" }
-                [pscustomobject]@{ Name = "Neovim"; WingetId = "Neovim.Neovim" }
-                [pscustomobject]@{ Name = "Ollama (Local AI)"; WingetId = "Ollama.Ollama" }
-                [pscustomobject]@{ Name = "pgAdmin 4"; WingetId = "pgAdmin.pgAdmin4" }
-                [pscustomobject]@{ Name = "Postman"; WingetId = "Postman.Postman" }
-                [pscustomobject]@{ Name = "PuTTY"; WingetId = "PuTTY.PuTTY" }
-                [pscustomobject]@{ Name = "PyCharm Community"; WingetId = "JetBrains.PyCharm.Community" }
-                [pscustomobject]@{ Name = "Rider"; WingetId = "JetBrains.Rider" }
-                [pscustomobject]@{ Name = "Sublime Text 4"; WingetId = "SublimeHQ.SublimeText.4" }
-                [pscustomobject]@{ Name = "Termius"; WingetId = "Termius.Termius" }
-                [pscustomobject]@{ Name = "Unity Hub"; WingetId = "Unity.UnityHub" }
-                [pscustomobject]@{ Name = "Visual Studio Code"; WingetId = "Microsoft.VisualStudioCode" }
-                [pscustomobject]@{ Name = "WebStorm"; WingetId = "JetBrains.WebStorm" }
-                [pscustomobject]@{ Name = "WinSCP"; WingetId = "WinSCP.WinSCP" }
-                [pscustomobject]@{ Name = "Zed"; WingetId = "Zed.Zed" }
-            )
-        },
-        [pscustomobject]@{
-            TitleEn = "Runtimes & Frameworks"
-            TitleHe = "$(-join [char[]]@(0x05E1,0x05D1,0x05D9,0x05D1,0x05D5,0x05EA)) $(-join [char[]]@(0x05E8,0x05D9,0x05E6,0x05D4)) $(-join [char[]]@(0x05D5,0x05DE,0x05E1,0x05D3,0x05D9)) $(-join [char[]]@(0x05E0,0x05EA,0x05D5,0x05E0,0x05D9,0x05DD))"
-            Key = "runtimes"
-            Icon = "$([char]0xE756)"
-            Items = @(
-                [pscustomobject]@{ Name = ".NET Desktop Runtime 8"; WingetId = "Microsoft.DotNet.DesktopRuntime.8" }
-                [pscustomobject]@{ Name = ".NET SDK 8"; WingetId = "Microsoft.DotNet.SDK.8" }
-                [pscustomobject]@{ Name = "CMake"; WingetId = "Kitware.CMake" }
-                [pscustomobject]@{ Name = "DirectX Runtime"; WingetId = "Microsoft.DirectX" }
-                [pscustomobject]@{ Name = "Docker Desktop"; WingetId = "Docker.DockerDesktop" }
-                [pscustomobject]@{ Name = "Go"; WingetId = "GoLang.Go" }
-                [pscustomobject]@{ Name = "Java JDK 21 (Temurin)"; WingetId = "EclipseAdoptium.Temurin.21.JDK" }
-                [pscustomobject]@{ Name = "Java JRE 21 (Temurin)"; WingetId = "EclipseAdoptium.Temurin.21.JRE" }
-                [pscustomobject]@{ Name = "MongoDB"; WingetId = "MongoDB.Server" }
-                [pscustomobject]@{ Name = "MySQL"; WingetId = "Oracle.MySQL" }
-                [pscustomobject]@{ Name = "PHP"; WingetId = "PHP.PHP" }
-                [pscustomobject]@{ Name = "PostgreSQL"; WingetId = "PostgreSQL.PostgreSQL" }
-                [pscustomobject]@{ Name = "Python 3.12"; WingetId = "Python.Python.3.12" }
-                [pscustomobject]@{ Name = "Ruby"; WingetId = "RubyInstallerTeam.Ruby" }
-                [pscustomobject]@{ Name = "Rust"; WingetId = "Rustlang.Rustup" }
-                [pscustomobject]@{ Name = "Visual C++ Redist x64"; WingetId = "Microsoft.VCRedist.2015+.x64" }
-                [pscustomobject]@{ Name = "Visual C++ Redist x86"; WingetId = "Microsoft.VCRedist.2015+.x86" }
-                [pscustomobject]@{ Name = "WebView2 Runtime"; WingetId = "Microsoft.EdgeWebView2Runtime" }
-            )
-        },
-        [pscustomobject]@{
-            TitleEn = "Utilities & System"
-            TitleHe = "$(-join [char[]]@(0x05E2,0x05D6,0x05E8,0x05D9)) $(-join [char[]]@(0x05DE,0x05E2,0x05E8,0x05DB,0x05EA))"
-            Key = "utils"
-            Icon = "$([char]0xE713)"
-            Items = @(
-                [pscustomobject]@{ Name = "7-Zip"; WingetId = "7zip.7zip" }
-                [pscustomobject]@{ Name = "AnyDesk"; WingetId = "AnyDeskSoftwareGmbH.AnyDesk" }
-                [pscustomobject]@{ Name = "AOMEI Partition Assistant"; WingetId = "AOMEI.PartitionAssistant" }
-                [pscustomobject]@{ Name = "AutoHotkey"; WingetId = "Lexikos.AutoHotkey" }
-                [pscustomobject]@{ Name = "CrystalDiskInfo"; WingetId = "CrystalDewWorld.CrystalDiskInfo" }
-                [pscustomobject]@{ Name = "CrystalDiskMark"; WingetId = "CrystalDewWorld.CrystalDiskMark" }
-                [pscustomobject]@{ Name = "Dropbox"; WingetId = "Dropbox.Dropbox" }
-                [pscustomobject]@{ Name = "Everything (Instant Search)"; WingetId = "voidtools.Everything" }
-                [pscustomobject]@{ Name = "FanControl"; WingetId = "Rem0o.FanControl.Beta" }
-                [pscustomobject]@{ Name = "Fluent Search"; WingetId = "BlastApps.FluentSearch" }
-                [pscustomobject]@{ Name = "Foxit PDF Reader"; WingetId = "Foxit.FoxitReader" }
-                [pscustomobject]@{ Name = "Google Drive"; WingetId = "Google.Drive" }
-                [pscustomobject]@{ Name = "HWiNFO"; WingetId = "REALiX.HWiNFO" }
-                [pscustomobject]@{ Name = "HWMonitor"; WingetId = "CPUID.HWMonitor" }
-                [pscustomobject]@{ Name = "Macrorit Partition Expert"; WingetId = "Macrorit.PartitionExpert" }
-                [pscustomobject]@{ Name = "Microsoft PowerToys"; WingetId = "Microsoft.PowerToys" }
-                [pscustomobject]@{ Name = "Notepad++"; WingetId = "Notepad++.Notepad++" }
-                [pscustomobject]@{ Name = "PowerShell 7"; WingetId = "Microsoft.PowerShell" }
-                [pscustomobject]@{ Name = "Process Explorer"; WingetId = "Microsoft.Sysinternals.ProcessExplorer" }
-                [pscustomobject]@{ Name = "qBittorrent"; WingetId = "qBittorrent.qBittorrent" }
-                [pscustomobject]@{ Name = "Rufus (USB Creator)"; WingetId = "Rufus.Rufus" }
-                [pscustomobject]@{ Name = "RustDesk"; WingetId = "RustDesk.RustDesk" }
-                [pscustomobject]@{ Name = "StartAllBack"; WingetId = "Tihiy.StartAllBack" }
-                [pscustomobject]@{ Name = "SumatraPDF"; WingetId = "SumatraPDF.SumatraPDF" }
-                [pscustomobject]@{ Name = "Sysinternals Suite"; WingetId = "Microsoft.Sysinternals" }
-                [pscustomobject]@{ Name = "TeamViewer"; WingetId = "TeamViewer.TeamViewer" }
-                [pscustomobject]@{ Name = "TeraCopy"; WingetId = "CodeSector.TeraCopy" }
-                [pscustomobject]@{ Name = "TranslucentTB"; WingetId = "TranslucentTB.TranslucentTB" }
-                [pscustomobject]@{ Name = "TreeSize Free"; WingetId = "JAMSoftware.TreeSize.Free" }
-                [pscustomobject]@{ Name = "VirtualBox"; WingetId = "Oracle.VirtualBox" }
-                [pscustomobject]@{ Name = "VMware Workstation Player"; WingetId = "VMware.WorkstationPlayer" }
-                [pscustomobject]@{ Name = "Winaero Tweaker"; WingetId = "Winaero.WinaeroTweaker" }
-                [pscustomobject]@{ Name = "WindirStat"; WingetId = "WinDirStat.WinDirStat" }
-                [pscustomobject]@{ Name = "Windows Terminal"; WingetId = "Microsoft.WindowsTerminal" }
-                [pscustomobject]@{ Name = "WinRAR"; WingetId = "RARLab.WinRAR" }
-            )
-        },
-        [pscustomobject]@{
-            TitleEn = "Security & Cleanup"
-            TitleHe = "$(-join [char[]]@(0x05D0,0x05D1,0x05D8,0x05D7,0x05D4)) $(-join [char[]]@(0x05D5,0x05E0,0x05D9,0x05E7,0x05D5,0x05D9))"
-            Key = "security"
-            Icon = "$([char]0xE773)"
-            Items = @(
-                [pscustomobject]@{ Name = "1Password"; WingetId = "AgileBits.1Password" }
-                [pscustomobject]@{ Name = "Bitwarden"; WingetId = "Bitwarden.Bitwarden" }
-                [pscustomobject]@{ Name = "BleachBit"; WingetId = "BleachBit.BleachBit" }
-                [pscustomobject]@{ Name = "CCleaner"; WingetId = "Piriform.CCleaner" }
-                [pscustomobject]@{ Name = "Geek Uninstaller"; WingetId = "ThomasKoen.GeekUninstaller" }
-                [pscustomobject]@{ Name = "Malwarebytes"; WingetId = "Malwarebytes.Malwarebytes" }
-                [pscustomobject]@{ Name = "Revo Uninstaller"; WingetId = "RevoUninstaller.RevoUninstaller" }
-                [pscustomobject]@{ Name = "Wireshark"; WingetId = "WiresharkFoundation.Wireshark" }
-            )
-        },
-        [pscustomobject]@{
-            TitleEn = "Hardware Audit & Privacy"
-            TitleHe = "$(-join [char[]]@(0x05D1,0x05D3,0x05D9,0x05E7,0x05EA)) $(-join [char[]]@(0x05D7,0x05D5,0x05DE,0x05E8,0x05D4)) $(-join [char[]]@(0x05D5,0x05E4,0x05E8,0x05D8,0x05D9,0x05D5,0x05EA))"
-            Key = "audit"
-            Icon = "$([char]0xE9D9)"
-            Items = @(
-                [pscustomobject]@{ Name = "Profile: Gaming"; Title = "Gaming"; Desc = "Max performance, zero mouse accel, lower network latency."; TweakId = "AuditProfile1"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Profile: Office & Browsing"; Title = "Office & Browsing"; Desc = "Stability, power saving, bloatware removal."; TweakId = "AuditProfile2"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Profile: Content Creation"; Title = "Content Creation"; Desc = "Maximize stable resources for rendering/production."; TweakId = "AuditProfile3"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Profile: AI & Machine Learning"; Title = "AI & Machine Learning"; Desc = "Deep system scan, max RAM/VRAM utilization, Long Paths."; TweakId = "AuditProfile4"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Profile: Forensic Deep Scan"; Title = "Forensic Deep Scan"; Desc = "Driver & Targeted Folder Analysis - ~5-10 Minutes."; TweakId = "AuditProfile5"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Profile: UNDO"; Title = "UNDO"; Desc = "Restore every change recorded by the last run (or Windows defaults)."; TweakId = "AuditProfile6"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Profile: Ultimate Debloat"; Title = "Ultimate Debloat"; Desc = "Telemetry services off, consumer bloatware removed, Bing search off."; TweakId = "AuditProfile7"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Profile: Privacy Shield"; Title = "Privacy Shield"; Desc = "Telemetry level 0, tracking tasks off, telemetry domains blocked."; TweakId = "AuditProfile8"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Profile: Laptop Battery Saver"; Title = "Laptop Battery Saver"; Desc = "Power Saver plan, CPU capped at 80% on battery, faster screen/disk sleep."; TweakId = "AuditProfile9"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Profile: Network Supercharger"; Title = "Network Supercharger"; Desc = "Optimize TCP/IP stack, flush DNS, prioritize gaming packets."; TweakId = "AuditProfile10"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Profile: Nuclear Ultra-Deep Debloat"; Title = "Nuclear Ultra-Deep Debloat"; Desc = "Extreme background stripping of Edge, Copilot, Widgets & telemetry."; TweakId = "AuditProfile11"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Profile: Deep System Cleanup"; Title = "Deep System Cleanup"; Desc = "Clean Windows Update cache, crash dumps, temp files, and SSD TRIM."; TweakId = "AuditProfile12"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Profile: Security Hardening"; Title = "Security Hardening"; Desc = "Disable WPAD, Remote Assistance, and lock screen exposure."; TweakId = "AuditProfile13"; IsTweak = $true }
-                [pscustomobject]@{ Name = "Generate HTML Report (Desktop)"; Title = "Generate HTML Report"; Desc = "Create an interactive, transparent HTML report of all system changes."; TweakId = "GenerateHtmlReport"; IsTweak = $true }
-            )
-        }
-    )
-}
-
-$script:isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-$scriptPath = $MyInvocation.MyCommand.Path
-# If running via irm/iex, $scriptPath will be empty. We handle this gracefully.
-if (-not $scriptPath) {
-    $script:scriptDir = $env:TEMP
-} else {
-    $script:scriptDir = Split-Path -Parent $scriptPath
-}
-
-# Raw GitHub location of this script (used when it has to be downloaded or relaunched).
-$script:RawBase = 'https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master'
-function Get-WFSupportFile([string]$Name) {
-    $local = Join-Path $script:scriptDir $Name
-    if (Test-Path -LiteralPath $local) { return $local }
-    if ($PSScriptRoot) {
-        $alt = Join-Path $PSScriptRoot $Name
-        if (Test-Path -LiteralPath $alt) { return $alt }
-    }
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-        $content = (Invoke-WebRequest -Uri "$($script:RawBase)/$Name" -UseBasicParsing -ErrorAction Stop).Content
-        if ($content -is [byte[]]) { $content = [Text.Encoding]::UTF8.GetString($content) }
-        # Saved with a BOM so Windows PowerShell 5.1 reads the Hebrew text correctly.
-        [IO.File]::WriteAllText($local, $content.TrimStart([char]0xFEFF), (New-Object Text.UTF8Encoding($true)))
-        return $local
-    } catch {
-        return $null
-    }
-}
-
-# The console engine runs in its own process, which needs this script as a file.
-# Started from a file: use it. Started with 'irm | iex': download a fresh copy once per session.
-function Get-WFSelfPath {
-    if ($PSCommandPath) { return $PSCommandPath }
-    if ($script:WFSelfPath -and (Test-Path -LiteralPath $script:WFSelfPath)) { return $script:WFSelfPath }
-    $target = Join-Path $script:scriptDir 'WinFlexSetupModern.ps1'
-    Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
-    $script:WFSelfPath = Get-WFSupportFile 'WinFlexSetupModern.ps1'
-    return $script:WFSelfPath
-}
-if (-not $script:isAdmin) {
-    if ($scriptPath) {
-        Write-Host "Elevating to Administrator..." -ForegroundColor Yellow
-        Start-Process powershell.exe -Verb RunAs -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", "`"$scriptPath`"", "-Gui")
-        exit
-    } else {
-        Write-Host "Elevating to Administrator..." -ForegroundColor Yellow
-        try {
-            Start-Process powershell.exe -Verb RunAs -ErrorAction Stop -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-Command", "& ([scriptblock]::Create((irm '$($script:RawBase)/WinFlexSetupModern.ps1'))) -Gui")
-        } catch {
-            Write-Warning "Administrator rights are required. Right-click PowerShell -> Run as Administrator, then paste the command again."
-        }
-        # 'exit' would close the console the user typed the command in.
-        return
-    }
-}
-
-Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
-[System.Windows.Forms.Application]::EnableVisualStyles() | Out-Null
-
-$backgroundImagePath = "C:\MENU\Discovery+of+The+Lost+Vista+1+-+4K.jpg"
-$audioPath = "C:\MENU\winflex.wav"
-$script:LogPath = Join-Path $env:TEMP "winflex-setup.log"
-function He([int[]]$codes){$s="";foreach($c in $codes){$s+=[char]$c};$s}
-
-function Write-Log([string]$Message) {
-    $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-    try { Add-Content -Path $script:LogPath -Value "[$ts] $Message" -Encoding UTF8 } catch {}
-}
-
-$script:player = $null; $script:isMuted = $false
-if (Test-Path -LiteralPath $audioPath) {
-    try { $script:player = New-Object System.Media.SoundPlayer -ArgumentList $audioPath; $script:player.Load() } catch { $script:player = $null }
-}
-function Play-Sound { if ($script:player -and -not $script:isMuted) { try { $script:player.PlayLooping() } catch {} } }
-function Toggle-Mute {
-    if (-not $script:player) { return }
-    if ($script:isMuted) { $script:isMuted = $false; try { $script:player.PlayLooping() } catch {} }
-    else { $script:isMuted = $true; try { $script:player.Stop() } catch {} }
-}
-
-function Test-Winget { [bool](Get-Command winget -ErrorAction SilentlyContinue) }
-function Install-Winget {
-    if (Test-Winget) { return $true }
-    $tmpDir = Join-Path $env:TEMP "winget-install"
-    New-Item -ItemType Directory -Force -Path $tmpDir -ErrorAction SilentlyContinue | Out-Null
-    $bundle = Join-Path $tmpDir "Microsoft.DesktopAppInstaller.msixbundle"
-    try { (New-Object Net.WebClient).DownloadFile("https://aka.ms/getwinget", $bundle) } catch {}
-    try { Add-AppxPackage -Path $bundle -ErrorAction SilentlyContinue | Out-Null } catch {}
-    Start-Sleep -Seconds 2; return (Test-Winget)
-}
-function Invoke-WingetInstall([string]$Id, [bool]$IsExact=$true) {
-    if ($IsExact) {
-        $a = @("install","-e","--id",$Id,"--silent","--accept-package-agreements","--accept-source-agreements")
-    } else {
-        $a = @("install",$Id,"--silent","--accept-package-agreements","--accept-source-agreements")
-    }
-    $p = Start-Process -FilePath "winget" -ArgumentList $a -PassThru -Wait -NoNewWindow
-    if ($p.ExitCode -ne 0) { throw "winget failed for $Id (ExitCode=$($p.ExitCode))" }
-}
-
-# ===== ADDED HARDWARE AUDIT & TWEAKS =====
-function Get-SystemHardwareAudit {
-    $systemEnclosure = Get-CimInstance -ClassName Win32_SystemEnclosure -ErrorAction SilentlyContinue
-    $chassisTypes = $systemEnclosure.ChassisTypes
-    $batteryCheck = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue
-    
-    $laptopChassisCodes = @(8, 9, 10, 11, 12, 14, 18, 21, 30, 31, 32)
-    $script:IsLaptop = if ($batteryCheck) { $true } else { $false }
-    if (-not $script:IsLaptop) {
-        foreach ($c in $chassisTypes) { if ($laptopChassisCodes -contains $c) { $script:IsLaptop = $true; break } }
-    }
-    
-    $formFactorName = if ($script:IsLaptop) { "Laptop" } else { "Desktop" }
-    $script:IsAsus = ($baseboard.Manufacturer -match 'ASUS|ASUSTeK') -or ($computerSystem.Manufacturer -match 'ASUS|ASUSTeK')
-    $osInfo = Get-CimInstance Win32_OperatingSystem
-    $isWin11 = $osInfo.BuildNumber -ge 22000
-    $osName = if ($isWin11) { "Windows 11" } else { "Windows 10" }
-
-    $script:cpu = Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
-    $baseboard = Get-CimInstance -ClassName Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
-    $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
-    $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue | Select-Object -First 1
-    
-    $ramSticks = Get-CimInstance -ClassName Win32_PhysicalMemory -ErrorAction SilentlyContinue
-    $script:totalRamGB = [math]::Round((($ramSticks | Measure-Object -Property Capacity -Sum).Sum) / 1GB, 2)
-    $script:gpus = Get-CimInstance -ClassName Win32_VideoController -ErrorAction SilentlyContinue
-    $disks = Get-PhysicalDisk -ErrorAction SilentlyContinue
-    
-    $script:hasSSD = $false
-    foreach ($d in $disks) {
-        if ($d.MediaType -eq "SSD" -or $d.BusType -eq "NVMe") { $script:hasSSD = $true }
-    }
-
-    if ($null -ne $AuditTerminalText -and $AuditTerminalText.Inlines.Count -eq 0) {
-        $AuditTerminalText.Inlines.Clear()
-        function Add-ColorText([string]$text, [string]$color) {
-            $run = New-Object System.Windows.Documents.Run
-            $run.Text = $text
-            $run.Foreground = (New-Object System.Windows.Media.BrushConverter).ConvertFromString($color)
-            $AuditTerminalText.Inlines.Add($run) | Out-Null
-        }
-        
-        Add-ColorText "[ Smart Hardware Optimization & Profile customization ]`n" "#00FF00"
-        Add-ColorText "-------------------------------------------------------`n`n" "#888888"
-
-        Add-ColorText "Phase 1: Comprehensive System & Hardware Audit`n" "#FF00FF"
-
-        Add-ColorText "`n[+] Detected System Configuration: $formFactorName`n" "#00FFFF"
-        Add-ColorText "  * Operating System: $osName (Build $($osInfo.BuildNumber))`n" "#AAAAAA"
-        Add-ColorText "  * Manufacturer & Model: $($computerSystem.Manufacturer) $($computerSystem.Model)`n" "#AAAAAA"
-        Add-ColorText "  * Motherboard: $($baseboard.Manufacturer) $($baseboard.Product) (BIOS: $($bios.SMBIOSBIOSVersion))`n" "#AAAAAA"
-        if ($script:IsAsus) {
-            Add-ColorText "  * [*] ASUS Hardware: Detected (Armoury Crate Deep Taming & Anti-Stutter Engine Ready)`n" "#FF00FF"
-        }
-        Add-ColorText "`n" "#AAAAAA"
-        
-        Add-ColorText "* CPU: $($script:cpu.Name)`n" "#00FF00"
-        Add-ColorText "  - $($script:cpu.NumberOfCores) Cores / $($script:cpu.NumberOfLogicalProcessors) Threads | Base Clock: $($script:cpu.MaxClockSpeed) MHz`n`n" "#888888"
-        
-        Add-ColorText "* RAM: $($script:totalRamGB) GB Installed`n" "#00FF00"
-        $stickIdx = 1
-        foreach ($stick in $ramSticks) {
-            $stickGb = [math]::Round($stick.Capacity / 1GB, 1)
-            Add-ColorText "  - Stick $($stickIdx): $stickGb GB | Speed: $($stick.ConfiguredClockSpeed) MHz (Maker: $($stick.Manufacturer))`n" "#888888"
-            $stickIdx++
-        }
-        
-        Add-ColorText "`n* GPU(s):`n" "#00FF00"
-        foreach ($gpu in $script:gpus) { 
-            $vram = if ($gpu.AdapterRAM -gt 0) { "$([math]::Round($gpu.AdapterRAM / 1GB, 2)) GB VRAM" } else { "Shared RAM" }
-            Add-ColorText "  - $($gpu.Name) [$vram] (Driver: $($gpu.DriverVersion))`n" "#00AAAA"
-        }
-        
-        Add-ColorText "`n* Storage:`n" "#00FF00"
-        foreach ($d in $disks) {
-            Add-ColorText "  - $($d.FriendlyName) : $([math]::Round($d.Size / 1GB, 1)) GB | Media: $($d.MediaType) $($d.BusType)`n" "#888888"
-        }
-        
-        Add-ColorText "`n* Disk Health (S.M.A.R.T):`n" "#00FF00"
-        foreach ($pd in $disks) {
-            $health = if ($pd.HealthStatus -eq "Healthy") { "[Healthy]" } else { "[WARNING]" }
-            Add-ColorText "  - $($pd.FriendlyName): $health (Status: $($pd.OperationalStatus))`n" "#AAAAAA"
-        }
-        
-        Add-ColorText "`n* Network Interfaces & Latency:`n" "#00FF00"
-        $nics = Get-NetAdapter | Where-Object { $_.Status -eq "Up" } -ErrorAction SilentlyContinue
-        foreach ($nic in $nics) {
-            Add-ColorText "  - $($nic.Name) ($($nic.InterfaceDescription)) - Link: $($nic.LinkSpeed)`n" "#AAAAAA"
-        }
-        $ping = Test-Connection -ComputerName 8.8.8.8 -Count 1 -ErrorAction SilentlyContinue
-        if ($ping) { Add-ColorText "  - Internet Ping (8.8.8.8): $($ping.ResponseTime) ms`n" "#00FFFF" }
-
-        Add-ColorText "`n-------------------------------------------------------`n" "#888888"
-        Add-ColorText "Phase 2: Define Usage Profile (Customization)`n" "#FF00FF"
-        Add-ColorText "What is the primary use case for this PC? (Select a number):`n" "#AAAAAA"
-        
-        Add-ColorText "[1] Gaming" "#00FFFF"
-        Add-ColorText " - Max performance, zero mouse accel, lower network latency.`n" "#AAAAAA"
-        Add-ColorText "[2] Office & Browsing" "#00FFFF"
-        Add-ColorText " - Stability, power saving, bloatware removal.`n" "#AAAAAA"
-        Add-ColorText "[3] Content Creation" "#00FFFF"
-        Add-ColorText " - Maximize stable resources for rendering/production.`n" "#AAAAAA"
-        Add-ColorText "[4] AI & Machine Learning" "#00FFFF"
-        Add-ColorText " - Deep system scan, max RAM/VRAM utilization, Long Paths.`n" "#AAAAAA"
-        Add-ColorText "[5] Forensic Deep Scan" "#00FFFF"
-        Add-ColorText " - (Driver & Targeted Folder Analysis) - ~5-10 Minutes`n" "#AAAAAA"
-        Add-ColorText "[6] UNDO" "#00FFFF"
-        Add-ColorText " - Revert all optimizations to Windows defaults.`n" "#AAAAAA"
-        Add-ColorText "[7] Ultimate Debloat" "#00FFFF"
-        Add-ColorText " - Extreme telemetry removal, disable Defender, remove Edge.`n" "#AAAAAA"
-        Add-ColorText "[8] Privacy Shield" "#00FFFF"
-        Add-ColorText " - Block all tracking, disable Cortana, spoof telemetry.`n" "#AAAAAA"
-        Add-ColorText "[9] Laptop Battery Saver" "#00FFFF"
-        Add-ColorText " - Underclock CPU, max power saving, disable background sync.`n" "#AAAAAA"
-        Add-ColorText "[10] Network Supercharger" "#00FFFF"
-        Add-ColorText " - Optimize TCP/IP stack, flush DNS, prioritize gaming packets.`n" "#AAAAAA"
-        Add-ColorText "[11] Nuclear Ultra-Deep Debloat" "#FF0055"
-        Add-ColorText " - Extreme background stripping of Edge, Copilot, Widgets & telemetry.`n" "#AAAAAA"
-        Add-ColorText "[12] Deep System Cleanup" "#FFD700"
-        Add-ColorText " - Clean Windows Update cache, crash dumps, temp files, and SSD TRIM.`n" "#AAAAAA"
-        Add-ColorText "[13] Security & Privacy Hardening" "#00FF66"
-        Add-ColorText " - Disable WPAD, remote assistance, and lock screen privacy exposure.`n" "#AAAAAA"
-    }
-}
-
-
-# ==============================================================================
-# [100000% SUPERCHARGED ENGINE] ASUS Hardware & Armoury Crate Deep Taming
-# ==============================================================================
-function Test-IsAsusDevice {
-    if ($null -ne $script:IsAsus) { return $script:IsAsus }
-    $bb = Get-CimInstance -ClassName Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
-    $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue | Select-Object -First 1
-    $script:IsAsus = [bool](($bb.Manufacturer -match 'ASUS|ASUSTeK') -or ($cs.Manufacturer -match 'ASUS|ASUSTeK'))
-    return $script:IsAsus
-}
-
-function Invoke-AsusGamingOptimization {
-    if (-not (Test-IsAsusDevice)) { return $null }
-
-    Write-Log "[ASUS Engine] ASUS Motherboard/System Detected! Beginning 100000% Deep Taming..."
-    $actions = [System.Collections.Generic.List[string]]::new()
-
-    # 1. Eliminate GameFirst / cFosSpeed Network Filter (Causes massive ping spikes & latency jitter)
-    $netServices = @("AsusGameFirstService", "ROG Game First", "cFosSpeed", "cFosSpeedSvc")
-    foreach ($svc in $netServices) {
-        $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
-        if ($s) {
-            Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-            Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
-            $actions.Add("Disabled ASUS GameFirst / cFosSpeed service ($svc) -> Zero ping spikes.")
-            Write-Log "ASUS Optimization: Disabled $svc"
-        }
-    }
-
-    # 2. Disable heavy background telemetry, update loops and live ad services
-    # (Keeps core fan, hotkey, and power controls like ASUS Optimization / System Control Interface fully working!)
-    $telemetryServices = @(
-        "AsusROGLSLService",       # ROG Live Service (ad banners, deals, continuous CPU polling)
-        "ASUSSoftwareManager",     # Background update checker loop
-        "ASUSLinkNear",            # Link to MyASUS near device polling
-        "ASUSLinkRemote",          # Link to MyASUS remote
-        "AsusAppService",          # Analytics and app telemetry service
-        "AsusCertService",         # Certificate/installer validation loop
-        "AsusPTPCenter"            # Telemetry service
-    )
-    foreach ($svc in $telemetryServices) {
-        $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
-        if ($s) {
-            Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-            Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
-            $actions.Add("Disabled ASUS background telemetry service ($svc) -> Micro-stutters stopped.")
-            Write-Log "ASUS Optimization: Disabled $svc"
-        }
-    }
-
-    # 3. Tame LightingService.exe (Aura Sync RGB)
-    # LightingService is notorious for DPC latency spikes, micro-stutters, and anti-cheat false positives.
-    # Permanently set IFEO CpuPriorityClass = 5 (BelowNormal) so RGB stays on without frame drops.
-    try {
-        $ifeoPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\LightingService.exe\PerfOptions"
-        New-Item -Path $ifeoPath -Force -ErrorAction SilentlyContinue | Out-Null
-        Set-ItemProperty -Path $ifeoPath -Name "CpuPriorityClass" -Value 5 -Type DWord -Force -ErrorAction SilentlyContinue
-        $actions.Add("Configured LightingService.exe (Aura RGB) Priority to BelowNormal -> Anti-Cheat safe & zero frame drops.")
-    } catch {}
-    $lightingProcs = Get-Process -Name "LightingService" -ErrorAction SilentlyContinue
-    if ($lightingProcs) {
-        foreach ($proc in $lightingProcs) {
-            try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch {}
-        }
-    }
-
-    # 4. Terminate hung/memory-leak instances of ArmouryCrate helper processes
-    $hangHelpers = @("ArmouryCrate.UserSessionHelper", "ArmourySocketServer")
-    foreach ($helper in $hangHelpers) {
-        $procs = Get-Process -Name $helper -ErrorAction SilentlyContinue
-        if ($procs) {
-            $procs | Where-Object { $_.CPU -gt 15 -or $_.WorkingSet64 -gt 350MB } | Stop-Process -Force -ErrorAction SilentlyContinue
-            $actions.Add("Terminated hung/leaking instance of $helper.")
-            Write-Log "ASUS Optimization: Terminated hung helper $helper"
-        }
-    }
-
-    # 5. Prevent UEFI ASUS Grid / Armoury Crate auto-injection installer popups during games
-    $gridKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
-    if (Test-Path $gridKey) {
-        Remove-ItemProperty -Path $gridKey -Name "AsusUpdateCheck" -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $gridKey -Name "ArmouryCrateInstaller" -ErrorAction SilentlyContinue
-    }
-    $tasksToDisable = @(
-        "\ASUS\Armoury Crate\AsusUpdateCheck",
-        "\ASUS\Framework\AsusUnistallEvent"
-    )
-    foreach ($taskPath in $tasksToDisable) {
-        try {
-            $tFolder = $taskPath | Split-Path -Parent
-            $tName = $taskPath | Split-Path -Leaf
-            Disable-ScheduledTask -TaskPath $tFolder -TaskName $tName -ErrorAction SilentlyContinue | Out-Null
-        } catch {}
-    }
-
-    # 6. Prevent ASUS Power Scheme conflicts with Windows Ultimate / Game Mode
-    try {
-        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\be337238-0d82-4146-a960-4f3749d470c7" -Name "Attributes" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
-        $actions.Add("Prevented Armoury Crate power scheme overrides over Windows Ultimate Performance.")
-    } catch {}
-
-    if ($actions.Count -eq 0) {
-        $actions.Add("ASUS Hardware verified: Essential controls (fans/hotkeys) active, zero bloat/conflicting services detected.")
-    }
-
-    return $actions
-}
-
-function Invoke-SystemTweak($tweakId) {
-    if ($null -eq $script:hasSSD) { Get-SystemHardwareAudit | Out-Null }
-
-    $auditScriptPath = Get-WFSelfPath
-
-    # Route Audit Profiles to the enhanced transparent engine (restore point + HTML report + UNDO)
-    if ($tweakId -match "^AuditProfile(\d+)$") {
-        $pNum = $matches[1]
-        Write-Log "Executing Profile $pNum with live transparency & HTML report generation..."
-        if ($auditScriptPath) {
-            $p = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$auditScriptPath`"", "-ProfileId", "$pNum", "-Silent", "-NoPause", "-OpenReport") -PassThru -Wait -NoNewWindow
-            Write-Log "Profile $pNum finished with exit code $($p.ExitCode)"
-        } else {
-            Write-Log "Profile $pNum skipped: WinFlexSetupModern.ps1 could not be saved to disk for the engine process."
-        }
-        return
-    }
-
-    switch ($tweakId) {
-        # Both gaming entries use the engine's Gaming profile, so they get a restore point, a report and UNDO.
-        "ProfileGaming" {
-            Invoke-SystemTweak "AuditProfile1"
-        }
-        "ExtremeGamingBoost" {
-            Invoke-SystemTweak "AuditProfile1"
-        }
-        "AsusGamingFix" {
-            $asusRes = Invoke-AsusGamingOptimization
-            if ($asusRes) { foreach ($act in $asusRes) { Write-Log "[ASUS] $act" } }
-        }
-        "NuclearDebloat" {
-            Invoke-SystemTweak "AuditProfile11"
-        }
-        "SecurityHardening" {
-            Invoke-SystemTweak "AuditProfile13"
-        }
-        "GenerateHtmlReport" {
-            Write-Log "Generating HTML System Report on Desktop..."
-            if ($auditScriptPath) {
-                Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$auditScriptPath`"", "-DryRun", "-ProfileId", "11", "-Silent", "-NoPause", "-OpenReport") -Wait -NoNewWindow
-            }
-        }
-        "ExtremeDebloat" {
-            Invoke-SystemTweak "AuditProfile7"
-        }
-        "ForensicScan" {
-            Invoke-SystemTweak "AuditProfile5"
-        }
-        "DeepDebloat" {
-            $telemetryServices = @("DiagTrack", "dmwappushservice", "WerSvc")
-            foreach ($svc in $telemetryServices) {
-                Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-                Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
-            }
-            New-Item -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableSearchBoxSuggestions" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            $bloatware = @(
-                "Microsoft.BingNews", "Microsoft.MicrosoftSolitaireCollection", "Microsoft.NetworkSpeedTest",
-                "Microsoft.SkypeApp", "Microsoft.WindowsFeedbackHub", "Microsoft.ZuneVideo", "Microsoft.ZuneMusic",
-                "SpotifyAB.SpotifyMusic", "Clipchamp.Clipchamp", "Microsoft.Todos", "Microsoft.YourPhone"
-            )
-            foreach ($app in $bloatware) {
-                Get-AppxPackage -Name "*$app*" -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
-            }
-        }
-        "ClearTemp" {
-            foreach ($p in @($env:TEMP, "$env:SystemRoot\Temp", "$env:LOCALAPPDATA\Microsoft\Windows\INetCache", "$env:LOCALAPPDATA\CrashDumps")) {
-                if (Test-Path $p) { Get-ChildItem -Path $p -Force -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notlike "*winflex*" } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
-            }
-            Remove-Item "$env:LOCALAPPDATA\Microsoft\Windows\Explorer\thumbcache_*.db" -Force -ErrorAction SilentlyContinue
-            Write-Log "Temp files, caches and crash dumps cleaned (Recycle Bin left untouched)."
-        }
-        "CleanupWinUpdate" {
-            Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
-            Remove-Item "$env:SystemRoot\SoftwareDistribution\Download\*" -Recurse -Force -ErrorAction SilentlyContinue
-            Start-Service -Name wuauserv -ErrorAction SilentlyContinue
-            Dism.exe /Online /Cleanup-Image /StartComponentCleanup | Out-Null
-            Write-Log "Windows Update download cache and component store cleaned."
-        }
-        "NetworkReset" {
-            ipconfig /flushdns | Out-Null
-            netsh winsock reset | Out-Null
-            netsh int ip reset | Out-Null
-            Write-Log "DNS cache flushed; Winsock and TCP/IP stack reset."
-        }
-        "DisableCopilot" {
-            New-Item -Path "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" -Name "TurnOffWindowsCopilot" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" -Name "TurnOffWindowsCopilot" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            Write-Log "Windows Copilot disabled by policy."
-        }
-        "NoConsumerContent" {
-            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Name "DisableWindowsConsumerFeatures" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Name "DisableSoftLanding" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            $cdm = "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
-            foreach ($n in @("SubscribedContent-338388Enabled","SubscribedContent-338389Enabled","SubscribedContent-353694Enabled","SubscribedContent-353696Enabled","SilentInstalledAppsEnabled","SystemPaneSuggestionsEnabled","SoftLandingEnabled","RotatingLockScreenOverlayEnabled")) {
-                Set-ItemProperty -Path $cdm -Name $n -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            }
-            Write-Log "Consumer content, app suggestions and silent app installs disabled."
-        }
-        "ShowHiddenFiles" {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "Hidden" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            Write-Log "Explorer: Hidden files & extensions set to visible."
-        }
-        "DarkMode" {
-            $k = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-            Set-ItemProperty -Path $k -Name "AppsUseLightTheme" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path $k -Name "SystemUsesLightTheme" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            Write-Log "Windows dark mode enabled."
-        }
-        "ClassicContextMenu" {
-            New-Item -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" -Name "(default)" -Value "" -Force -ErrorAction SilentlyContinue
-            Write-Log "Classic (full) right-click menu enabled for Windows 11."
-        }
-        "ProfileOffice" {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e
-            Write-Log "Office profile applied."
-        }
-        "ProfileCreator" {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 20 -Type DWord -Force -ErrorAction SilentlyContinue
-            if (-not $script:IsLaptop) { powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c }
-            Write-Log "Content Creator profile applied."
-        }
-        "ProfileAI" {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 10 -Type DWord -Force -ErrorAction SilentlyContinue
-            if (-not $script:IsLaptop) {
-                powercfg -attributes SUB_PROCESSOR 0cc5b647-c1df-4637-891a-dec35c318583 -ATTRIB_HIDE 2>$null | Out-Null
-                $uGuid = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61
-                if ($uGuid -match "([A-Fa-f0-9\-]{36})") { powercfg -setactive $matches[1] } else { powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c }
-            }
-            Write-Log "AI Profile applied: Long Paths, Ultimate Power, System Responsiveness adjusted."
-        }
-        "SSDOptimize" {
-            if ($script:hasSSD) {
-                fsutil behavior set DisableDeleteNotify 0 | Out-Null
-                Optimize-Volume -DriveLetter C -ReTrim -ErrorAction SilentlyContinue | Out-Null
-                Write-Log "SSD TRIM optimization command completed."
-            }
-        }
-    }
-}
-# ==========================================
-
-# # -------- Software Lists (Loaded Dynamically) --------
-# The software lists ($browsers, etc.) and $script:Categories are loaded dynamically from GitHub during the Preflight check.
-
-$script:Lang = "he"
-function L([string]$he, [string]$en) { if ($script:Lang -eq "he") { $he } else { $en } }
-
-$script:Themes = @(
-    @{ Name="Cosmic (Video)"; Bg="#AA040209"; Sidebar="#88080414"; Card="#66100520"; Card2="#440A0214"; Fg="#FFFFFF"; Sub="#A296D4"; Accent="#B122E5"; Border="#55442266" },
-    @{ Name="Neon Cyan";    Bg="#0F0F0F"; Sidebar="#141414"; Card="#1E1E1E"; Card2="#181818"; Fg="#FFFFFF"; Sub="#B0B0B0"; Accent="#00BFFF"; Border="#2A2A2A" },
-    @{ Name="Tokyo Night";  Bg="#1A1B26"; Sidebar="#16161E"; Card="#24283B"; Card2="#1F2335"; Fg="#C0CAF5"; Sub="#787C99"; Accent="#7AA2F7"; Border="#2A3240" }
-)
-$xaml = @"
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="WinFlexOS Setup" WindowStyle="None" ResizeMode="CanResize" WindowState="Maximized"
-        AllowsTransparency="True" Background="Transparent" FontFamily="Bahnschrift, Segoe UI, sans-serif" FontSize="14">
-  <Window.Resources>
-    <SolidColorBrush x:Key="ThemeBg" Color="#0F0F0F"/><SolidColorBrush x:Key="ThemeSidebar" Color="#141414"/>
-    <SolidColorBrush x:Key="ThemeCard" Color="#1E1E1E"/><SolidColorBrush x:Key="ThemeCard2" Color="#181818"/>
-    <SolidColorBrush x:Key="ThemeFg" Color="#FFFFFF"/><SolidColorBrush x:Key="ThemeSub" Color="#B0B0B0"/>
-    <SolidColorBrush x:Key="ThemeBorder" Color="#2A2A2A"/><SolidColorBrush x:Key="ThemeAccent" Color="#00BFFF"/>
-    <CornerRadius x:Key="Rxl">22</CornerRadius><CornerRadius x:Key="Rl">18</CornerRadius>
-    <CornerRadius x:Key="Rm">14</CornerRadius><CornerRadius x:Key="Rs">10</CornerRadius>
-    <DropShadowEffect x:Key="CardShadow" BlurRadius="20" ShadowDepth="5" Direction="270" Color="Black" Opacity="0.2"/>
-    <DropShadowEffect x:Key="SoftGlow" BlurRadius="25" ShadowDepth="0" Color="#B122E5" Opacity="0.7"/>
-    <Style TargetType="ScrollBar"><Setter Property="Background" Value="Transparent"/><Setter Property="Width" Value="8"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollBar">
-        <Grid x:Name="G" Width="8" Background="Transparent"><Track x:Name="PART_Track" IsDirectionReversed="true"><Track.Thumb><Thumb><Thumb.Template><ControlTemplate TargetType="Thumb">
-          <Border x:Name="T" Background="#55888888" CornerRadius="4"/>
-          <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="T" Property="Background" Value="{DynamicResource ThemeAccent}"/></Trigger>
-          <Trigger Property="IsDragging" Value="True"><Setter TargetName="T" Property="Background" Value="{DynamicResource ThemeFg}"/></Trigger></ControlTemplate.Triggers>
-        </ControlTemplate></Thumb.Template></Thumb></Track.Thumb></Track></Grid>
-        <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="G" Property="Width" Value="12"/></Trigger></ControlTemplate.Triggers>
-      </ControlTemplate></Setter.Value></Setter></Style>
-    <Style TargetType="ComboBox"><Setter Property="Foreground" Value="{DynamicResource ThemeFg}"/><Setter Property="Background" Value="{DynamicResource ThemeCard}"/>
-      <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorder}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Height" Value="32"/><Setter Property="FontSize" Value="14"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBox"><Grid>
-        <ToggleButton Name="ToggleButton" Focusable="false" IsChecked="{Binding Path=IsDropDownOpen,Mode=TwoWay,RelativeSource={RelativeSource TemplatedParent}}" ClickMode="Press">
-          <ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border Background="{DynamicResource ThemeCard}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="6">
-            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="20"/></Grid.ColumnDefinitions>
-            <Path Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center" Fill="{DynamicResource ThemeSub}" Data="M 0 0 L 4 4 L 8 0 Z"/></Grid>
-          </Border></ControlTemplate></ToggleButton.Template></ToggleButton>
-        <ContentPresenter Name="ContentSite" IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}" Margin="10,0,23,0" VerticalAlignment="Center" HorizontalAlignment="Left"/>
-        <Popup Name="Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
-          <Grid MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}"><Border Background="{DynamicResource ThemeCard}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="6"/>
-            <ScrollViewer Margin="4,6" SnapsToDevicePixels="True"><StackPanel IsItemsHost="True"/></ScrollViewer></Grid></Popup>
-      </Grid></ControlTemplate></Setter.Value></Setter></Style>
-    <Style TargetType="ComboBoxItem"><Setter Property="Foreground" Value="{DynamicResource ThemeFg}"/><Setter Property="Background" Value="{DynamicResource ThemeCard}"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBoxItem">
-        <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="5" CornerRadius="4"><ContentPresenter/></Border>
-        <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="{DynamicResource ThemeAccent}"/><Setter Property="Foreground" Value="White"/></Trigger>
-          <Trigger Property="IsSelected" Value="True"><Setter TargetName="Bd" Property="Background" Value="{DynamicResource ThemeBorder}"/></Trigger>
-        </ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
-    <Style x:Key="WinCtrlBtn" TargetType="Button"><Setter Property="Width" Value="45"/><Setter Property="Height" Value="35"/><Setter Property="Background" Value="Transparent"/>
-      <Setter Property="Foreground" Value="#AAAAAA"/><Setter Property="FontFamily" Value="Segoe MDL2 Assets"/><Setter Property="FontSize" Value="12"/><Setter Property="BorderThickness" Value="0"/><Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="6"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
-        <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="#22888888"/><Setter Property="Foreground" Value="{DynamicResource ThemeFg}"/></Trigger>
-        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.55"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
-    <Style x:Key="CloseBtn" TargetType="Button"><Setter Property="Width" Value="45"/><Setter Property="Height" Value="35"/><Setter Property="Background" Value="Transparent"/>
-      <Setter Property="Foreground" Value="#AAAAAA"/><Setter Property="FontFamily" Value="Segoe MDL2 Assets"/><Setter Property="FontSize" Value="12"/><Setter Property="BorderThickness" Value="0"/><Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="0,12,0,0"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
-        <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="#E81123"/><Setter Property="Foreground" Value="White"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
-    <Style x:Key="PrimaryBtn" TargetType="Button"><Setter Property="Background" Value="{DynamicResource ThemeCard}"/><Setter Property="Foreground" Value="{DynamicResource ThemeFg}"/>
-      <Setter Property="BorderBrush" Value="{DynamicResource ThemeAccent}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-        <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{StaticResource Rs}" RenderTransformOrigin="0.5,0.5">
-          <Border.RenderTransform><ScaleTransform x:Name="PS" ScaleX="1" ScaleY="1"/></Border.RenderTransform>
-          <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/></Border>
-        <ControlTemplate.Triggers>
-          <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="PS" Storyboard.TargetProperty="ScaleX" To="1.06" Duration="0:0:0.15"/><DoubleAnimation Storyboard.TargetName="PS" Storyboard.TargetProperty="ScaleY" To="1.06" Duration="0:0:0.15"/></Storyboard></BeginStoryboard></EventTrigger>
-          <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="PS" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.2"/><DoubleAnimation Storyboard.TargetName="PS" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.2"/></Storyboard></BeginStoryboard></EventTrigger>
-          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="{DynamicResource ThemeAccent}"/><Setter TargetName="Bd" Property="BorderBrush" Value="Transparent"/><Setter Property="Foreground" Value="White"/></Trigger>
-          <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.55"/></Trigger>
-        </ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
-    <Style x:Key="SidebarBtn" TargetType="Button"><Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{DynamicResource ThemeSub}"/>
-      <Setter Property="Height" Value="44"/><Setter Property="FontSize" Value="15"/><Setter Property="Margin" Value="10,4"/><Setter Property="Padding" Value="16,0"/><Setter Property="Cursor" Value="Arrow"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="12" Padding="{TemplateBinding Padding}">
-          <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <TextBlock x:Name="Ic" Grid.Column="0" FontFamily="Segoe MDL2 Assets" FontSize="16" Text="{TemplateBinding Tag}" Foreground="{TemplateBinding Foreground}" VerticalAlignment="Center" Margin="0,0,12,0"/>
-            <ContentPresenter Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Left"/></Grid></Border>
-        <ControlTemplate.Triggers>
-        </ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
-  </Window.Resources>
-  <Grid>
-    <Grid>
-      <Rectangle>
-        <Rectangle.Fill>
-          <RadialGradientBrush Center="0.5,0.5" RadiusX="1.2" RadiusY="1.2">
-            <GradientStop Color="#0B0515" Offset="0"/>
-            <GradientStop Color="#020105" Offset="1"/>
-          </RadialGradientBrush>
-        </Rectangle.Fill>
-      </Rectangle>
-      <!-- Orbs -->
-      <Ellipse Width="1000" Height="1000" Margin="-400,-400,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False">
-        <Ellipse.Fill>
-          <RadialGradientBrush>
-            <GradientStop Color="#220066FF" Offset="0"/><GradientStop Color="#00000000" Offset="1"/>
-          </RadialGradientBrush>
-        </Ellipse.Fill>
-      </Ellipse>
-      <Ellipse Width="1200" Height="1200" Margin="0,0,-500,-500" HorizontalAlignment="Right" VerticalAlignment="Bottom" IsHitTestVisible="False">
-        <Ellipse.Fill>
-          <RadialGradientBrush>
-            <GradientStop Color="#22B122E5" Offset="0"/><GradientStop Color="#00000000" Offset="1"/>
-          </RadialGradientBrush>
-        </Ellipse.Fill>
-      </Ellipse>
-      <Image x:Name="BgImage" Stretch="UniformToFill" Opacity="0.1"/>
-    </Grid>
-    <Border x:Name="MainBorder" Background="{DynamicResource ThemeBg}" CornerRadius="{StaticResource Rxl}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" Margin="30,20" Effect="{StaticResource CardShadow}" Visibility="Collapsed" MaxWidth="1200" MaxHeight="850">
-      <Border.LayoutTransform><ScaleTransform ScaleX="1.25" ScaleY="1.25"/></Border.LayoutTransform>
-      <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="260"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-        <Border Grid.Column="0" Background="{DynamicResource ThemeSidebar}" CornerRadius="22,0,0,22" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,0,1,0">
-          <Grid>
-             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-             <StackPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="30,40,30,30" HorizontalAlignment="Center">
-               <Border Width="36" Height="36" CornerRadius="10" Background="{DynamicResource ThemeAccent}" HorizontalAlignment="Center" Margin="0,0,10,0" Effect="{StaticResource SoftGlow}">
-                 <TextBlock Text="&#xE7F4;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
-               <TextBlock FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center"><Run Text="Win" Foreground="White"/><Run Text="Flex" Foreground="{DynamicResource ThemeAccent}"/><Run Text="OS" Foreground="White"/></TextBlock></StackPanel>
-             <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Margin="0,0,0,20">
-               <StackPanel x:Name="SideMenu" Orientation="Vertical"/></ScrollViewer>
-             <StackPanel Grid.Row="2" Margin="20,0,20,30">
-               <TextBlock x:Name="SideSub" Visibility="Collapsed"/><TextBlock x:Name="SideFooter" Visibility="Collapsed"/>
-               <ComboBox x:Name="CmbTheme" Height="30" Margin="0,0,0,15" Padding="8,4"/>
-               <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                 <Button x:Name="BtnLang" Content="EN" Margin="0,0,8,0" Width="40" Height="30" FontSize="12" Foreground="{DynamicResource ThemeSub}" Background="Transparent" BorderThickness="0" Cursor="Hand"/>
-                 <Button x:Name="BtnMute" Content="Mute" Width="40" Height="30" FontSize="12" Foreground="{DynamicResource ThemeSub}" Background="Transparent" BorderThickness="0" Cursor="Hand"/>
-               </StackPanel>
-             </StackPanel>
-          </Grid>
-        </Border>
-        <Grid Grid.Column="1">
-          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-          <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,15,15,0" Panel.ZIndex="10">
-              <Button x:Name="BtnMin" Content="&#xE921;" Style="{StaticResource WinCtrlBtn}" Width="30" Height="30" FontSize="10"/>
-              <Button x:Name="BtnMax" Content="&#xE922;" Style="{StaticResource WinCtrlBtn}" Width="30" Height="30" FontSize="10"/>
-              <Button x:Name="BtnClose" Content="&#xE8BB;" Style="{StaticResource CloseBtn}" Width="30" Height="30" FontSize="10"/></StackPanel>
-          <Grid x:Name="MainArea" Grid.Row="1" Margin="30,20,30,20" IsEnabled="False" Opacity="0.6">
-           <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-             <Grid Grid.Row="0" Margin="0,0,0,20"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-               <StackPanel><TextBlock x:Name="TopTitle" Visibility="Collapsed"/><TextBlock x:Name="TopSub" Visibility="Collapsed"/>
-                 <TextBlock x:Name="PageTitle" Text="Welcome" Foreground="{DynamicResource ThemeFg}" FontSize="28" FontWeight="SemiBold"/>
-                 <TextBlock x:Name="PageDesc" Text="Select" Foreground="{DynamicResource ThemeSub}" FontSize="14" Margin="0,4,0,0" TextWrapping="Wrap"/></StackPanel>
-               <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
-                 <Button x:Name="BtnSelectAll" Content="Select All" Padding="16,8" Margin="0,0,10,0" FontSize="13" Background="Transparent" Foreground="{DynamicResource ThemeAccent}" BorderBrush="{DynamicResource ThemeAccent}" BorderThickness="1" Cursor="Hand"/>
-                 <Button x:Name="BtnDeselectAll" Content="Deselect" Padding="16,8" FontSize="13" Background="Transparent" Foreground="{DynamicResource ThemeSub}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" Cursor="Hand"/></StackPanel></Grid>
-             <Grid Grid.Row="1"><Grid x:Name="BrowsePanel"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                 <Border x:Name="SearchBoxBorder" Grid.Row="0" Background="{DynamicResource ThemeCard}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="10" Margin="0,0,0,16" Padding="12,8" Visibility="Collapsed">
-                   <DockPanel><TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" Foreground="{DynamicResource ThemeSub}" VerticalAlignment="Center" Margin="5,0,12,0" FontSize="16"/>
-                     <TextBox x:Name="TxtSearch" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource ThemeFg}" VerticalContentAlignment="Center" FontSize="15" CaretBrush="{DynamicResource ThemeAccent}"/></DockPanel></Border>
-                 <Border x:Name="InternetBanner" Grid.Row="1" Background="#14202B" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="{StaticResource Rm}" Padding="16" Margin="0,0,0,16" Visibility="Collapsed">
-                   <DockPanel><ProgressBar IsIndeterminate="True" Width="140" Height="8" Margin="0,0,16,0" DockPanel.Dock="Left"/>
-                     <TextBlock x:Name="InternetText" Text="Waiting..." Foreground="{DynamicResource ThemeFg}" VerticalAlignment="Center" FontSize="14"/></DockPanel></Border>
-                 <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
-                   <StackPanel>
-                     <ItemsControl x:Name="ItemsList">
-                       <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel Orientation="Horizontal" ItemWidth="280" ItemHeight="90"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
-                     <ItemsControl.ItemTemplate><DataTemplate>
-                         <CheckBox IsChecked="{Binding Selected}" Focusable="False" Margin="6" Cursor="Hand">
-                           <CheckBox.Template><ControlTemplate TargetType="CheckBox">
-                               <Border x:Name="CardBorder" Background="{DynamicResource ThemeCard2}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="12" Padding="16">
-                                 <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                   <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                     <TextBlock Text="{Binding Name}" Foreground="{DynamicResource ThemeFg}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                                     <TextBlock Text="{Binding Sub}" Foreground="{DynamicResource ThemeSub}" FontSize="12" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/></StackPanel>
-                                   <Grid Grid.Column="1" Width="36" Height="20" VerticalAlignment="Center" Margin="10,0" FlowDirection="LeftToRight">
-                                     <Border x:Name="ToggleBg" Background="{DynamicResource ThemeCard}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="10"/>
-                                     <Ellipse x:Name="ToggleKnob" Width="12" Height="12" Fill="{DynamicResource ThemeSub}" HorizontalAlignment="Left" Margin="4,0,0,0"/></Grid></Grid></Border>
-                               <ControlTemplate.Triggers>
-                                 <Trigger Property="IsChecked" Value="True"><Setter TargetName="ToggleBg" Property="Background" Value="{DynamicResource ThemeAccent}"/><Setter TargetName="ToggleBg" Property="BorderBrush" Value="{DynamicResource ThemeAccent}"/><Setter TargetName="ToggleKnob" Property="Fill" Value="White"/><Setter TargetName="ToggleKnob" Property="HorizontalAlignment" Value="Right"/><Setter TargetName="ToggleKnob" Property="Margin" Value="0,0,4,0"/><Setter TargetName="CardBorder" Property="BorderBrush" Value="{DynamicResource ThemeAccent}"/><Setter TargetName="CardBorder" Property="Background" Value="#11B122E5"/></Trigger>
-                                 <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="CardBorder" Property="Background" Value="{DynamicResource ThemeCard}"/></Trigger>
-                               </ControlTemplate.Triggers></ControlTemplate></CheckBox.Template></CheckBox>
-                       </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
-                   </StackPanel></ScrollViewer>
-                 <Border Grid.Row="3" Background="#111318" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="{StaticResource Rm}" Padding="16,12" Margin="0,16,0,0">
-                   <Grid>
-                     <Grid.ColumnDefinitions>
-                       <ColumnDefinition Width="Auto"/>
-                       <ColumnDefinition Width="*"/>
-                     </Grid.ColumnDefinitions>
-                     <TextBlock x:Name="StatusText" Grid.Column="0" Text="Ready." Foreground="{DynamicResource ThemeSub}" VerticalAlignment="Center" FontSize="13" TextTrimming="CharacterEllipsis" Margin="0,0,16,0"/>
-                     <ProgressBar x:Name="InstallProgress" Grid.Column="1" Height="8" Minimum="0" Maximum="100" Value="0" HorizontalAlignment="Stretch"/>
-                   </Grid>
-                 </Border></Grid>
-               <Grid x:Name="AuditPanel" Visibility="Collapsed">
-                 <Border Background="{DynamicResource ThemeCard}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="12" Padding="20" Margin="0,0,0,0">
-                   <Grid>
-                     <Grid.RowDefinitions>
-                       <RowDefinition Height="*"/>
-                       <RowDefinition Height="Auto"/>
-                     </Grid.RowDefinitions>
-                     <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
-                       <TextBlock x:Name="AuditTerminalText" FontFamily="Consolas" FontSize="14" Foreground="{DynamicResource ThemeFg}" TextWrapping="Wrap" LineHeight="22" FlowDirection="LeftToRight" TextAlignment="Left"/>
-                     </ScrollViewer>
-                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,20,0,0" FlowDirection="LeftToRight" HorizontalAlignment="Left">
-                       <TextBlock Text="Enter profile number (1-10):" Foreground="{DynamicResource ThemeFg}" FontSize="16" VerticalAlignment="Center" FontFamily="Consolas" Margin="0,0,10,0"/>
-                       <TextBox x:Name="AuditInputBox" Width="80" Height="30" FontSize="16" FontFamily="Consolas" Background="{DynamicResource ThemeCard}" Foreground="{DynamicResource ThemeFg}" BorderBrush="{DynamicResource ThemeAccent}" BorderThickness="1" Padding="5,0" VerticalContentAlignment="Center"/>
-                     </StackPanel>
-                   </Grid>
-                 </Border>
-               </Grid>
-               <Grid x:Name="InstallPanel" Visibility="Collapsed">
-                 <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="600">
-                   <Border Width="80" Height="80" CornerRadius="25" Background="{DynamicResource ThemeAccent}" HorizontalAlignment="Center" Margin="0,0,0,30" Effect="{StaticResource SoftGlow}">
-                     <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="36" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
-                   <TextBlock x:Name="InstTitle" Text="Installing..." Foreground="{DynamicResource ThemeFg}" FontSize="32" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,10"/>
-                   <TextBlock x:Name="InstAppName" Text="" Foreground="{DynamicResource ThemeAccent}" FontSize="24" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,8"/>
-                   <TextBlock x:Name="InstCount" Text="0 / 0" Foreground="{DynamicResource ThemeSub}" FontSize="16" HorizontalAlignment="Center" Margin="0,0,0,30"/>
-                   <Border Background="{DynamicResource ThemeCard2}" CornerRadius="12" Padding="6" Margin="0,0,0,16">
-                     <ProgressBar x:Name="InstProgressBig" Height="16" Minimum="0" Maximum="100" Value="0"/></Border>
-                   <TextBlock x:Name="InstPct" Text="0%" Foreground="{DynamicResource ThemeFg}" FontSize="42" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,16"/>
-                   <TextBlock x:Name="InstStatus" Text="" Foreground="{DynamicResource ThemeSub}" FontSize="15" HorizontalAlignment="Center" TextWrapping="Wrap"/></StackPanel></Grid></Grid></Grid></Grid>
-          <Border Grid.Row="2" Background="{DynamicResource ThemeCard}" CornerRadius="0,0,22,0" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,1,0,0" Padding="20,16">
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-              <Button x:Name="BtnBack" Content="Back" Padding="24,10" Margin="0,0,12,0" Style="{StaticResource PrimaryBtn}" FontSize="15"/>
-              <Button x:Name="BtnNext" Content="Next" Padding="24,10" Style="{StaticResource PrimaryBtn}" FontSize="15"/></StackPanel></Border></Grid></Grid></Border>
-    <Border x:Name="StartupOverlay" Visibility="Visible" Panel.ZIndex="100" Background="{DynamicResource ThemeBg}" CornerRadius="{StaticResource Rxl}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" Margin="30,20" Effect="{StaticResource CardShadow}" MaxWidth="1200" MaxHeight="850">
-      <Grid>
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
-        
-        <!-- Top Window Controls -->
-        <Grid Grid.Row="0" Margin="20,15">
-          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
-            <Button x:Name="OvMute" Content="Mute" Margin="0,0,8,0" Height="30" FontSize="12" Foreground="{DynamicResource ThemeSub}" Background="Transparent" BorderThickness="0" Cursor="Hand"/>
-            <Button x:Name="OvMin" Content="&#xE921;" Style="{StaticResource WinCtrlBtn}" Width="30" Height="30" FontSize="10"/>
-            <Button x:Name="OvClose" Content="&#xE8BB;" Style="{StaticResource CloseBtn}" Width="30" Height="30" FontSize="10"/>
-          </StackPanel>
-        </Grid>
-        
-        <Grid Grid.Row="1" Margin="50,20,50,50">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="1.1*"/>
-            <ColumnDefinition Width="0.9*"/>
-          </Grid.ColumnDefinitions>
-          
-          <!-- Column 0 (Hero & Buttons) - Visual Right in RTL -->
-          <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,40,0" HorizontalAlignment="Left">
-            <TextBlock x:Name="WelcomeTitle" FontSize="76" FontWeight="Bold" Margin="0,0,0,10">
-              <Run Text="Win" Foreground="White"/><Run Text="Flex" Foreground="{DynamicResource ThemeAccent}"/><Run Text="OS" Foreground="White"/>
-            </TextBlock>
-            <TextBlock x:Name="WelcomeDesc" Text="F L E X I B L E   &#x2022;   F A S T   &#x2022;   Y O U R S" Foreground="{DynamicResource ThemeAccent}" Opacity="0.9" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,40"/>
-            
-            <Border Height="3" Width="60" Background="{DynamicResource ThemeAccent}" HorizontalAlignment="Left" CornerRadius="1.5" Margin="0,0,0,40"/>
-            
-            <TextBlock x:Name="WelcomeBodyTitle" Text="Welcome" Foreground="{DynamicResource ThemeFg}" FontSize="38" FontWeight="Bold" Margin="0,0,0,15"/>
-            <TextBlock x:Name="WelcomeIntroText" Text="Loading..." Foreground="{DynamicResource ThemeSub}" TextWrapping="Wrap" FontSize="18" LineHeight="28" MaxWidth="500" HorizontalAlignment="Left"/>
-            
-            <!-- Footer Buttons -->
-            <StackPanel Orientation="Horizontal" Margin="0,60,0,0">
-              <Button x:Name="BtnContinue" Content="Get Started" Padding="50,18" Margin="0,0,20,0" Style="{StaticResource PrimaryBtn}" FontSize="18" FontWeight="Bold"/>
-              <Button x:Name="BtnExitWelcome" Content="Exit" Padding="40,18" FontSize="18" FontWeight="SemiBold" Background="Transparent" Foreground="{DynamicResource ThemeSub}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" Cursor="Hand"/>
-            </StackPanel>
-          </StackPanel>
-          
-          <!-- Column 1 (Cards) - Visual Left in RTL -->
-          <StackPanel Grid.Column="1" VerticalAlignment="Center">
-             <!-- About Card -->
-             <Border x:Name="WelcomePanel" Background="{DynamicResource ThemeCard}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="16" Padding="30" Margin="0,0,0,25" Effect="{StaticResource CardShadow}">
-                <StackPanel>
-                   <StackPanel Orientation="Horizontal" Margin="0,0,0,15">
-                      <Border Background="#20FF00FF" CornerRadius="10" Padding="8" Margin="0,0,15,0">
-                         <TextBlock Text="&#xE9D5;" FontFamily="Segoe MDL2 Assets" FontSize="20" Foreground="{DynamicResource ThemeAccent}"/>
-                      </Border>
-                      <TextBlock x:Name="AboutTitleText" Text="About" Foreground="{DynamicResource ThemeFg}" FontSize="22" FontWeight="Bold" VerticalAlignment="Center"/>
-                   </StackPanel>
-                   <TextBlock x:Name="AboutBodyText" Text="Loading details..." Foreground="{DynamicResource ThemeSub}" TextWrapping="Wrap" FontSize="15" LineHeight="24"/>
-                </StackPanel>
-             </Border>
-             
-             <!-- Usage Card -->
-             <Border Background="{DynamicResource ThemeCard2}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="16" Padding="30" Effect="{StaticResource CardShadow}">
-                <StackPanel>
-                   <StackPanel Orientation="Horizontal" Margin="0,0,0,15">
-                      <Border Background="#2000FFFF" CornerRadius="10" Padding="8" Margin="0,0,15,0">
-                         <TextBlock Text="&#xE9EE;" FontFamily="Segoe MDL2 Assets" FontSize="20" Foreground="#00FFFF"/>
-                      </Border>
-                      <TextBlock x:Name="UsageTitleText" Text="How to use" Foreground="{DynamicResource ThemeFg}" FontSize="22" FontWeight="Bold" VerticalAlignment="Center"/>
-                   </StackPanel>
-                   <TextBlock x:Name="UsageBodyText" Text="Loading steps..." Foreground="{DynamicResource ThemeSub}" TextWrapping="Wrap" FontSize="15" LineHeight="24"/>
-                </StackPanel>
-             </Border>
-          </StackPanel>
-          
-          <TextBlock x:Name="HintText" Visibility="Collapsed"/>
-          
-          <!-- Hidden Preflight for compatibility -->
-          <Border x:Name="PreflightPanel" Visibility="Collapsed">
-             <StackPanel>
-                <TextBlock x:Name="PreflightHeader"/>
-                <TextBlock x:Name="PreflightStatus"/>
-                <ProgressBar x:Name="PreflightBar"/>
-                <TextBlock x:Name="PreflightPct"/>
-             </StackPanel>
-          </Border>
-          <TextBlock x:Name="WelcomeFoot" Visibility="Collapsed"/>
-        </Grid>
-      </Grid>
-    </Border>
-    <Grid x:Name="IntroOverlay" Panel.ZIndex="200" Background="Black" Visibility="Collapsed">
-      <MediaElement x:Name="IntroVideo" LoadedBehavior="Manual" UnloadedBehavior="Stop" Stretch="Uniform"/>
-      <Button x:Name="BtnSkipIntro" Content="Skip Intro" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="30" Padding="20,10" Background="#55000000" Foreground="White" BorderThickness="1" BorderBrush="White" Cursor="Hand" FontSize="16"/>
-    </Grid>
-  </Grid>
-</Window>
-"@
-
-try {
-    $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
-    $window = [Windows.Markup.XamlReader]::Load($reader)
-} catch { throw "XAML load failed: $($_.Exception.Message)" }
-function Find([string]$name) { $window.FindName($name) }
-
-$BgImage=Find "BgImage"; $TopTitle=Find "TopTitle"; $TopSub=Find "TopSub"
-$PageTitle=Find "PageTitle"; $PageDesc=Find "PageDesc"; $ItemsList=Find "ItemsList"
-$InstallProgress=Find "InstallProgress"; $StatusText=Find "StatusText"
-$InternetBanner=Find "InternetBanner"; $InternetText=Find "InternetText"
-$BtnBack=Find "BtnBack"; $BtnNext=Find "BtnNext"
-$BtnLang=Find "BtnLang"; $BtnMute=Find "BtnMute"; $BtnMin=Find "BtnMin"
-$BtnMax=Find "BtnMax"; $BtnClose=Find "BtnClose"; $SideMenu=Find "SideMenu"
-$AuditPanel=Find "AuditPanel"; $AuditTerminalText=Find "AuditTerminalText"; $AuditInputBox=Find "AuditInputBox"
-$SideSub=Find "SideSub"; $SideFooter=Find "SideFooter"; $CmbTheme=Find "CmbTheme"
-$MainBorder=Find "MainBorder"; $MainArea=Find "MainArea"; $StartupOverlay=Find "StartupOverlay"
-$BrowsePanel=Find "BrowsePanel"; $InstallPanel=Find "InstallPanel"
-$InstTitle=Find "InstTitle"; $InstAppName=Find "InstAppName"; $InstCount=Find "InstCount"
-$InstProgressBig=Find "InstProgressBig"; $InstPct=Find "InstPct"; $InstStatus=Find "InstStatus"
-$WelcomeTitle=Find "WelcomeTitle"; $WelcomeDesc=Find "WelcomeDesc"
-$WelcomePanel=Find "WelcomePanel"; $WelcomeBodyTitle=Find "WelcomeBodyTitle"
-$WelcomeIntroText=Find "WelcomeIntroText"; $AboutTitleText=Find "AboutTitleText"
-$AboutBodyText=Find "AboutBodyText"; $UsageTitleText=Find "UsageTitleText"
-$UsageBodyText=Find "UsageBodyText"; $HintText=Find "HintText"
-$PreflightPanel=Find "PreflightPanel"
-$PreflightHeader=Find "PreflightHeader"; $PreflightStatus=Find "PreflightStatus"
-$PreflightBar=Find "PreflightBar"; $PreflightPct=Find "PreflightPct"
-$BtnContinue=Find "BtnContinue"; $BtnExitWelcome=Find "BtnExitWelcome"; $WelcomeFoot=Find "WelcomeFoot"
-$BtnSelectAll=Find "BtnSelectAll"; $BtnDeselectAll=Find "BtnDeselectAll"
-$OvMin=Find "OvMin"; $OvClose=Find "OvClose"; $OvMute=Find "OvMute"
-$TxtSearch=Find "TxtSearch"; $SearchBoxBorder=Find "SearchBoxBorder"
-$IntroOverlay=Find "IntroOverlay"; $IntroVideo=Find "IntroVideo"; $BtnSkipIntro=Find "BtnSkipIntro"
-
-if (Test-Path -LiteralPath $backgroundImagePath) {
-    try { $bmp=New-Object System.Windows.Media.Imaging.BitmapImage; $bmp.BeginInit(); $bmp.CacheOption=[System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad; $bmp.UriSource=[Uri]::new("file:///$backgroundImagePath"); $bmp.EndInit(); $BgImage.Source=$bmp } catch {} }
-# Log labels removed
-
-$MainBorder.Add_MouseLeftButtonDown({ try { if ($_.ClickCount -eq 2) { if ($window.WindowState -eq 'Maximized') { $window.WindowState='Normal' } else { $window.WindowState='Maximized' } } else { $window.DragMove() } } catch {} })
-$BtnClose.Add_Click({ $window.Close() }); $OvClose.Add_Click({ $window.Close() })
-$BtnMin.Add_Click({ $window.WindowState='Minimized' }); $OvMin.Add_Click({ $window.WindowState='Minimized' })
-$BtnMax.Add_Click({ if ($window.WindowState -eq 'Maximized') { $window.WindowState='Normal' } else { $window.WindowState='Maximized' } })
-$MuteHandler = { 
-    Toggle-Mute
-    $text = $(if ($script:isMuted) { (L (-join([char]0x05D1,[char]0x05D8,[char]0x05DC,[char]0x0020,[char]0x05D4,[char]0x05E9,[char]0x05EA,[char]0x05E7,[char]0x05D4)) "Unmute") } 
-            else { (L (-join([char]0x05D4,[char]0x05E9,[char]0x05EA,[char]0x05E7)) "Mute") })
-    $BtnMute.Content = $text
-    $OvMute.Content = $text
-}
-$BtnMute.Add_Click($MuteHandler)
-$OvMute.Add_Click($MuteHandler)
-
-foreach ($t in $script:Themes) { [void]$CmbTheme.Items.Add($t.Name) }; $CmbTheme.SelectedIndex=0
-function Apply-ThemeByName([string]$Name) {
-    $t=$script:Themes|Where-Object{$_.Name -eq $Name}|Select-Object -First 1; if(-not $t){return}
-    function SetBrush([string]$key,[string]$hex){$bc=New-Object System.Windows.Media.BrushConverter;$brush=[System.Windows.Media.Brush]$bc.ConvertFromString($hex);$brush.Freeze();$window.Resources[$key]=$brush}
-    SetBrush "ThemeBg" $t.Bg; SetBrush "ThemeSidebar" $t.Sidebar; SetBrush "ThemeCard" $t.Card; SetBrush "ThemeCard2" $t.Card2
-    SetBrush "ThemeFg" $t.Fg; SetBrush "ThemeSub" $t.Sub; SetBrush "ThemeAccent" $t.Accent; SetBrush "ThemeBorder" $t.Border
-}
-$CmbTheme.Add_SelectionChanged({ Apply-ThemeByName ([string]$CmbTheme.SelectedItem) }); Apply-ThemeByName ([string]$CmbTheme.SelectedItem)
-
-function New-ItemVm($item) {
-    $sub=if($item.IsTweak){"System Tweak"}elseif($item.WingetId){"winget: $($item.WingetId)"}elseif($item.Path){"file: $($item.Path)"}else{""}
-    $sel=$false
-    [pscustomobject]@{Name=$item.Name;Sub=$sub;Raw=$item;Selected=$sel}
-}
-$script:CurrentCategoryIndex=0; $script:CategoryVms=@(); $script:IsInstallPhase=$false
-function Initialize-CategoryVms {
-    $script:CategoryVms=@()
-    foreach($cat in $script:Categories){$script:CategoryVms+=,(@($cat.Items|ForEach-Object{New-ItemVm $_}))}
-}
-
-function Get-CategorySelectedCount([int]$idx) { $c=0; foreach($vm in $script:CategoryVms[$idx]){if($vm.Selected){$c++}}; return $c }
-function Get-TotalSelectedCount { $c=0; for($i=0;$i -lt $script:CategoryVms.Count;$i++){$c+=(Get-CategorySelectedCount $i)}; return $c }
-
-function Apply-Language {
-    $script:isHe = ($script:Lang -eq "he")
-    $BtnLang.Content = $(if ($script:isHe) { "EN" } else { "HE" })
-    
-    $BtnMute.Content = $(if ($script:isMuted) { (L (He @(0x05D1,0x05D8,0x05DC,0x0020,0x05D4,0x05E9,0x05EA,0x05E7,0x05D4)) "Unmute") } else { (L (He @(0x05D4,0x05E9,0x05EA,0x05E7)) "Mute") })
-    $BtnBack.Content = $(L (He @(0x05D4,0x05E7,0x05D5,0x05D3,0x05DD)) "Back")
-    $BtnNext.Content = $(L (He @(0x05D4,0x05D1,0x05D0)) "Next")
-    $TopSub.Text = $(L (He @(0x05D1,0x05D7,0x05E8,0x20,0x05EA,0x05D5,0x05DB,0x05E0,0x05D5,0x05EA,0x20,0x05DC,0x05D4,0x05EA,0x05E7,0x05E0,0x05D4)) "Choose apps to install")
-    $SideSub.Text = $(L (He @(0x05EA,0x05E4,0x05E8,0x05D9,0x05D8,0x20,0x05D4,0x05EA,0x05E7,0x05E0,0x05D4)) "Installation menu")
-    $StatusText.Text = $(L (He @(0x05DE,0x05D5,0x05DB,0x05DF,0x2E)) "Ready.")
-    $InternetText.Text = $(L (He @(0x5DE,0x5DE,0x5EA,0x5D9,0x5E0,0x5D9,0x5DD,0x20,0x5DC,0x5D0,0x5D9,0x5E0,0x5D8,0x5E8,0x5E0,0x5D8,0x2E,0x2E,0x2E)) "Waiting for internet...")
-    $BtnSelectAll.Content = $(L (He @(0x05D1,0x05D7,0x05E8,0x20,0x05D4,0x05DB,0x05DC)) "Select All")
-    $BtnDeselectAll.Content = $(L (He @(0x05D1,0x05D8,0x05DC,0x05D4,0x05DB,0x05DC)) "Deselect All")
-    $BtnContinue.Content = $(L (He @(0x05D4,0x05D1,0x05D0)) "Next")
-    $BtnExitWelcome.Content = $(L (He @(0x05DC,0x05D0,0x20,0x05DE,0x05E2,0x05D5,0x05E0,0x05D9,0x05D9,0x05DF)) "No thanks")
-    
-    $userName = $env:USERNAME
-    $wGreHe = (He @(0x05E9, 0x05DC, 0x05D5, 0x05DD, 0x20)) + $userName
-    $wTitleHe = He @(0x05D1,0x05E8,0x05D5,0x05DB,0x05D9,0x05DD,0x20,0x05D4,0x05D1,0x05D0,0x05D9,0x05DD,0x20,0x05DC,0x2D,0x57,0x69,0x6E,0x46,0x6C,0x65,0x78,0x4F,0x53)
-    $wDescHe = He @(0x05D4,0x05D2,0x05E8,0x05E1,0x05D4,0x20,0x05E9,0x05DC,0x05DA,0x2C,0x20,0x05D4,0x05E9,0x05DC,0x05D9,0x05D8,0x05D4,0x20,0x05E9,0x05DC,0x05DA,0x2E)
-    # $WelcomeTitle.Text = $(L $wTitleHe "Welcome to WinFlexOS")
-    $WelcomeDesc.Text = $(L $wGreHe ("Hello " + $userName))
-    
-    $window.FlowDirection = $(if ($script:isHe) { "RightToLeft" } else { "LeftToRight" })
-}
-$BtnLang.Add_Click({ $script:Lang=$(if($script:Lang -eq "he"){"en"}else{"he"}); Apply-Language; Render-SideMenu; Show-Category })
-
-$TxtSearch.Add_KeyDown({
-    if ($_.Key -eq 'Return' -or $_.Key -eq 'Enter') {
-        $val = $TxtSearch.Text.Trim()
-        if ($val -ne "") {
-            $newItem = [pscustomobject]@{Name=$val; Sub="winget: $val"; Raw=@{Name=$val; WingetId=$val; IsCustom=$true}; Selected=$true}
-            $script:CategoryVms[$script:CurrentCategoryIndex] += $newItem
-            $ItemsList.ItemsSource = $null
-            $ItemsList.ItemsSource = $script:CategoryVms[$script:CurrentCategoryIndex]
-            $TxtSearch.Text = ""
-            Render-SideMenu
-        }
-    }
-})
-
-$script:SideButtons=@()
-function Render-SideMenu {
-    $SideMenu.Children.Clear(); $script:SideButtons=@()
-    for($i=0;$i -lt $script:Categories.Count;$i++){
-        $cat=$script:Categories[$i]; $cnt=Get-CategorySelectedCount $i
-        $label=(L $cat.TitleHe $cat.TitleEn); if($cnt -gt 0){$label+=" ($cnt)"}
-        $btn=New-Object System.Windows.Controls.Button
-        $btn.Content=$label; $btn.Tag=$cat.Icon; $btn.Uid=$i.ToString(); $btn.Style=$window.FindResource("SidebarBtn")
-        $btn.IsHitTestVisible = $false
-        $SideMenu.Children.Add($btn)|Out-Null; $script:SideButtons+=$btn
-    }
-    for($j=0;$j -lt $script:SideButtons.Count;$j++){
-        $b=$script:SideButtons[$j]
-        if($j -eq $script:CurrentCategoryIndex){$b.Foreground=$window.Resources["ThemeFg"];$b.Background=New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#15222E"))}
-        else{$b.Foreground=$window.Resources["ThemeSub"];$b.Background=[System.Windows.Media.Brushes]::Transparent}
-    }
-}
-function Show-Category {
-    $script:IsInstallPhase=$false; $cat=$script:Categories[$script:CurrentCategoryIndex]
-    $PageTitle.Text=(L $cat.TitleHe $cat.TitleEn)
-    $PageDesc.Text=(L (-join([char]0x05D1,[char]0x05D7,[char]0x05E8,[char]0x0020,[char]0x05DE,[char]0x05D4,[char]0x0020,[char]0x05DC,[char]0x05D4,[char]0x05EA,[char]0x05E7,[char]0x05D9,[char]0x05DF,[char]0x002E)) "Select what to install.")
-    $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]
-    if($cat.Key -eq "custom"){$SearchBoxBorder.Visibility='Visible'}else{$SearchBoxBorder.Visibility='Collapsed'}
-    $InstallPanel.Visibility='Collapsed'
-    if ($cat.Key -eq "audit") {
-        $BrowsePanel.Visibility='Collapsed'
-        $AuditPanel.Visibility='Visible'
-        Get-SystemHardwareAudit
-    } else {
-        $BrowsePanel.Visibility='Visible'
-        $AuditPanel.Visibility='Collapsed'
-    }
-    $InstallProgress.Value=0; $StatusText.Text=(L (-join([char]0x05DE,[char]0x05D5,[char]0x05DB,[char]0x05DF,[char]0x002E)) "Ready.")
-    $BtnBack.IsEnabled=$true; $BtnNext.IsEnabled=$true; Render-SideMenu
-}
-function Get-SelectedSoftware { $sel=New-Object System.Collections.Generic.List[object]; for($i=0;$i -lt $script:CategoryVms.Count;$i++){foreach($vm in $script:CategoryVms[$i]){if($vm.Selected){$sel.Add($vm.Raw)}}}; return $sel }
-
-$BtnSelectAll.Add_Click({ foreach($vm in $script:CategoryVms[$script:CurrentCategoryIndex]){$vm.Selected=$true}; $ItemsList.ItemsSource=$null; $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]; Render-SideMenu })
-$BtnDeselectAll.Add_Click({ foreach($vm in $script:CategoryVms[$script:CurrentCategoryIndex]){$vm.Selected=$false}; $ItemsList.ItemsSource=$null; $ItemsList.ItemsSource=$script:CategoryVms[$script:CurrentCategoryIndex]; Render-SideMenu })
-
-function Start-InstallPhase {
-    $selected=@(Get-SelectedSoftware)
-    if ($AuditInputBox -and $AuditInputBox.Text -match "^([1-9]|1[0-3])$") {
-        $tId = "AuditProfile" + $AuditInputBox.Text
-        $tName = "Profile $tId"
-        $selected += [pscustomobject]@{ Name = $tName; TweakId = $tId; IsTweak = $true }
-    }
-    if($selected.Count -eq 0){$StatusText.Text=(L (He @(0x05DC,0x05D0,0x0020,0x05E0,0x05D1,0x05D7,0x05E8,0x0020,0x05DB,0x05DC,0x05D5,0x05DD,0x002E)) "Nothing selected.");return}
-    $script:IsInstallPhase=$true; $BrowsePanel.Visibility='Collapsed'; $AuditPanel.Visibility='Collapsed'; $InstallPanel.Visibility='Visible'
-    $PageTitle.Text=(L (He @(0x05DE,0x05EA,0x05E7,0x05D9,0x05DF,0x0020,0x05EA,0x05D5,0x05DB,0x05E0,0x05D5,0x05EA,0x002E,0x002E,0x002E)) "Installing..."); $PageDesc.Text=(L (He @(0x05D0,0x05E0,0x05D0,0x0020,0x05D4,0x05DE,0x05EA,0x05DF,0x002E,0x002E,0x002E)) "Please wait...")
-    $BtnBack.IsEnabled=$false; $BtnNext.IsEnabled=$false; $window.Dispatcher.Invoke([action]{},"Background")
-
-    $tweaks = @($selected | Where-Object { $_.IsTweak })
-    $softwares = @($selected | Where-Object { -not $_.IsTweak })
-
-    if ($tweaks.Count -gt 0) {
-        $InstTitle.Text=(L (He @(0x05DE,0x05E0,0x05E7,0x05D4,0x0020,0x05D5,0x05DE,0x05D9,0x05D9,0x05E2,0x05DC,0x002E,0x002E,0x002E)) "Cleaning and optimizing...")
-        $total=$tweaks.Count
-        for($i=0;$i -lt $total;$i++){
-            $sw=$tweaks[$i]; $name=$sw.Name
-            $InstAppName.Text=$name; $InstCount.Text="$($i+1) / $total"
-            $InstPct.Text="$([int](($i*100)/$total))%"; $InstProgressBig.Value=[int](($i*100)/$total)
-            $InstStatus.Text=(L ((He @(0x05DE,0x05D1,0x05E6,0x05E2,0x003A,0x0020))+$name) "Applying: $name"); $window.Dispatcher.Invoke([action]{},"Background")
-            try{ Write-Log "Tweak start: $name"
-                Invoke-SystemTweak $sw.TweakId
-                Write-Log "Tweak success: $name"
-            }catch{Write-Log "Tweak failed: $name :: $($_.Exception.Message)"}
-        }
-    }
-
-    if ($softwares.Count -gt 0) {
-        $InstTitle.Text=(L (He @(0x05DE,0x05EA,0x05E7,0x05D9,0x05DF,0x0020,0x05EA,0x05D5,0x05DB,0x05E0,0x05D5,0x05EA,0x002E,0x002E,0x002E)) "Installing software...")
-        $InstAppName.Text=""; $InstCount.Text=""; $InstStatus.Text=""; $InstProgressBig.Value=0; $InstPct.Text="0%"
-        $hasWinget=[bool](Get-Command winget -ErrorAction SilentlyContinue)
-        if(-not $hasWinget){
-            Write-Log "winget missing"; $InstAppName.Text="Winget"
-            $InstStatus.Text=(L (He @(0x05DE,0x05EA,0x05E7,0x05D9,0x05DF,0x0020,0x0057,0x0069,0x006E,0x0067,0x0065,0x0074,0x002E,0x002E,0x002E)) "Installing Winget..."); $window.Dispatcher.Invoke([action]{},"Background")
-            $tmpDir=Join-Path $env:TEMP "winget-install"; New-Item -ItemType Directory -Force -Path $tmpDir -ErrorAction SilentlyContinue|Out-Null
-            $bundle=Join-Path $tmpDir "Microsoft.DesktopAppInstaller.msixbundle"
-            try{(New-Object Net.WebClient).DownloadFile("https://aka.ms/getwinget",$bundle)}catch{}
-            try{Add-AppxPackage -Path $bundle -ErrorAction SilentlyContinue|Out-Null}catch{}; Start-Sleep -Seconds 2 }
-        $total=$softwares.Count
-        for($i=0;$i -lt $total;$i++){
-            $sw=$softwares[$i]; $name=$sw.Name
-            $InstAppName.Text=$name; $InstCount.Text="$($i+1) / $total"
-            $InstPct.Text="$([int](($i*100)/$total))%"; $InstProgressBig.Value=[int](($i*100)/$total)
-            $InstStatus.Text=(L ((He @(0x05DE,0x05EA,0x05E7,0x05D9,0x05DF,0x003A,0x0020))+$name) "Installing: $name"); $window.Dispatcher.Invoke([action]{},"Background")
-            try{ Write-Log "Install start: $name"
-                if($sw.IsCustom) { Invoke-WingetInstall $sw.WingetId $false }
-                elseif($sw.WingetId){Invoke-WingetInstall $sw.WingetId}
-                elseif($sw.Path){if(-not(Test-Path -LiteralPath $sw.Path)){throw "Not found: $($sw.Path)"};Start-Process -FilePath $sw.Path -Wait}
-                else{throw "Unknown method"}; Write-Log "Install success: $name"
-            }catch{Write-Log "Install failed: $name :: $($_.Exception.Message)"}
-        }
-    }
-    
-    $InstProgressBig.Value=100; $InstPct.Text="100%"
-    $InstTitle.Text=(L (He @(0x05D4,0x05D5,0x05E9,0x05DC,0x05DD,0x05D5,0x0021)) "Completed!"); $InstAppName.Text=(L (He @(0x05DB,0x05DC,0x0020,0x05D4,0x05EA,0x05D5,0x05DB,0x05E0,0x05D5,0x05EA,0x0020,0x05D4,0x05D5,0x05EA,0x05E7,0x05E0,0x05D5,0x002E)) "All software installed.")
-    $InstCount.Text=""; $InstStatus.Text=(L (He @(0x05D1,0x05D3,0x05D5,0x05E7,0x0020,0x05DC,0x05D5,0x05D2,0x002E)) "Check log.")
-    $PageTitle.Text=(L (He @(0x05D4,0x05D5,0x05E9,0x05DC,0x05DD,0x05D5,0x0021)) "Completed."); $PageDesc.Text=(L (He @(0x05DB,0x05DC,0x0020,0x05D4,0x05EA,0x05D5,0x05DB,0x05E0,0x05D5,0x05EA,0x05D4,0x05D5,0x05EA,0x05E7,0x05E0,0x05D5,0x002E)) "All software installed.")
-    $BtnBack.IsEnabled=$true; $BtnNext.IsEnabled=$false
-}
-
-function Set-PreflightUI([int]$pct,[string]$msg) { if($pct -lt 0){$pct=0}; if($pct -gt 100){$pct=100}; $PreflightBar.Value=$pct; $PreflightPct.Text="$pct%"; $PreflightStatus.Text=$msg }
-function Run-PreflightAsync {
-    if($script:preflightTimer){try{$script:preflightTimer.Stop()}catch{};$script:preflightTimer=$null}
-    $BtnContinue.IsEnabled=$false; $BtnExitWelcome.IsEnabled=$false
-    $script:preflightPhase="ping"; $script:preflightPingIdx=0; $script:preflightPingOk=0
-    $script:preflightWingetPs=$null; $script:preflightWingetAsync=$null; $script:preflightWingetTick=0
-    Write-Log "Preflight: starting ICMP ping sequence"
-    Set-PreflightUI 2 (L (-join([char]0x05E9,[char]0x05D5,[char]0x05DC,[char]0x05D7,[char]0x0020,[char]0x0070,[char]0x0069,[char]0x006E,[char]0x0067)) "Starting ping...")
-    $script:preflightTimer = New-Object System.Windows.Threading.DispatcherTimer
-    $script:preflightTimer.Interval = [TimeSpan]::FromMilliseconds(450)
-    $script:preflightTimer.Add_Tick({
-        try {
-            if ($script:preflightPhase -eq "ping") {
-                if ($script:preflightPingIdx -lt 4) {
-                    $n=$script:preflightPingIdx+1; $pct=[int](5+[Math]::Round($n*30/4)); $line=""
-                    $p=New-Object System.Net.NetworkInformation.Ping
-                    try { $r=$p.Send("1.1.1.1",4000)
-                        if($r.Status -eq [System.Net.NetworkInformation.IPStatus]::Success){$script:preflightPingOk++;$ttl=$(if($null -ne $r.Options){$r.Options.Ttl}else{"?"});$line="Reply: time=$($r.RoundtripTime)ms TTL=$ttl"}
-                        else{$line="Ping $n/4: $($r.Status)"} } catch { $line="Ping error" } finally { $p.Dispose() }
-                    Set-PreflightUI $pct "Ping ($n/4) - $line"; $script:preflightPingIdx++; return }
-                if ($script:preflightPingOk -lt 1) { Set-PreflightUI 36 (L (-join([char]0x05D0,[char]0x05D9,[char]0x05DF,[char]0x0020,[char]0x05EA,[char]0x05E9,[char]0x05D5,[char]0x05D3,[char]0x05D4,[char]0x002E)) "No reply.") }
-                else { Set-PreflightUI 36 (L (-join([char]0x0050,[char]0x0069,[char]0x006E,[char]0x0067,[char]0x0020,[char]0x05D4,[char]0x05E6,[char]0x05DC,[char]0x05D7,[char]0x05D3,[char]0x002E)) "Ping OK.") }
-                $script:preflightPhase="menu"
-                return
-            }
-            if ($script:preflightPhase -eq "menu") {
-                Set-PreflightUI 40 (L (-join([char]0x05DE,[char]0x05D5,[char]0x05E8,0x05D9,0x05D3,0x20,0x05EA,0x05E4,0x05E8,0x05D9,0x05D8,0x2E,0x2E,0x2E)) "Loading local menu...")
-                try {
-                    if ($MenuPath -and (Test-Path -LiteralPath $MenuPath)) { . $MenuPath } else { Initialize-WFMenuData }
-                    if ($script:Categories) {
-                        Initialize-CategoryVms
-                        Render-SideMenu
-                        Show-Category
-                        Play-Sound
-                        Write-Log "Preflight: menu loaded successfully"
-                    } else {
-                        throw "The built-in menu could not be loaded"
-                    }
-                    $script:preflightPhase="winget"
-                    $ps=[PowerShell]::Create()
-                    $ps.AddScript({param($LogPath);function Write-Log([string]$Message){$ts=(Get-Date).ToString("yyyy-MM-dd HH:mm:ss");try{Add-Content -Path $LogPath -Value "[$ts] $Message" -Encoding UTF8}catch{}};function Test-Winget{[bool](Get-Command winget -ErrorAction SilentlyContinue)};function Install-Winget{if(Test-Winget){return $true};$tmpDir=Join-Path $env:TEMP "winget-install";New-Item -ItemType Directory -Force -Path $tmpDir|Out-Null;$bundle=Join-Path $tmpDir "Microsoft.DesktopAppInstaller.msixbundle";(New-Object Net.WebClient).DownloadFile("https://aka.ms/getwinget",$bundle);Add-AppxPackage -Path $bundle -ErrorAction Stop|Out-Null;Start-Sleep -Seconds 2;return(Test-Winget)};Write-Log "Preflight: ensuring winget...";if(-not(Install-Winget)){throw "winget installation failed"};Write-Log "Preflight: OK";return $true}).AddArgument($script:LogPath)|Out-Null
-                    $script:preflightWingetPs=$ps; $script:preflightWingetAsync=$ps.BeginInvoke(); return
-                } catch {
-                    Set-PreflightUI 0 (L ((-join([char]0x05E9,[char]0x05D2,[char]0x05D9,[char]0x05D0,[char]0x05D4,[char]0x003A,[char]0x0020))+$_.Exception.Message) ("Error: "+$_.Exception.Message))
-                    $script:preflightTimer.Stop()
-                    $BtnContinue.IsEnabled=$true
-                    return
-                }
-            }
-            if ($script:preflightPhase -eq "winget") {
-                $wa=$script:preflightWingetAsync; if(-not $wa){return}; $script:preflightWingetTick++
-                $cap=[Math]::Min(94,38+[Math]::Min(50,$script:preflightWingetTick))
-                Set-PreflightUI $cap (L (-join([char]0x05DE,[char]0x05DB,[char]0x05D9,[char]0x05DF,[char]0x0020,[char]0x0077,[char]0x0069,[char]0x0065,[char]0x0067)) "Preparing winget...")
-                if($wa.IsCompleted){$script:preflightTimer.Stop()
-                    try{$null=$script:preflightWingetPs.EndInvoke($script:preflightWingetAsync)
-                        Set-PreflightUI 100 (L (-join([char]0x05D1,[char]0x05D3,[char]0x05D9,[char]0x05E7,[char]0x05D5,[char]0x05EA,[char]0x0020,[char]0x05D4,[char]0x05D5,[char]0x05E9,[char]0x05DC,[char]0x05DE,[char]0x05D5,[char]0x002E)) "Checks complete.")
-                        $StartupOverlay.Visibility='Collapsed'; $MainBorder.Visibility='Visible'; $MainArea.IsEnabled=$true;$MainArea.Opacity=1
-                    }catch{Set-PreflightUI 0 (L ((-join([char]0x05E9,[char]0x05D2,[char]0x05D9,[char]0x05D0,[char]0x05D4,[char]0x003A,[char]0x0020))+$_.Exception.Message) ("Error: "+$_.Exception.Message));$BtnContinue.IsEnabled=$true}
-                    finally{if($script:preflightWingetPs){$script:preflightWingetPs.Dispose()};$script:preflightWingetPs=$null;$script:preflightWingetAsync=$null} } }
-        } catch {} })
-    $script:preflightTimer.Start()
-}
-
-$BtnContinue.Add_Click({$WelcomePanel.Visibility='Collapsed';$PreflightPanel.Visibility='Visible';$BtnContinue.IsEnabled=$false;Run-PreflightAsync})
-$BtnExitWelcome.Add_Click({$window.Close()})
-$BtnBack.Add_Click({if($script:IsInstallPhase){$script:CurrentCategoryIndex=$script:Categories.Count-1;Show-Category}elseif($script:CurrentCategoryIndex -gt 0){$script:CurrentCategoryIndex--;Show-Category}})
-$BtnNext.Add_Click({
-    if($script:IsInstallPhase){return}
-    if($script:CurrentCategoryIndex -lt ($script:Categories.Count-1)){$script:CurrentCategoryIndex++;Show-Category}
-    else{Start-InstallPhase}
-})
-
-Apply-Language
-$userName = $env:USERNAME
-
-# Helper to decode Hebrew numeric arrays (and emojis)
-function He { 
-    param($arr) 
-    $out = ""
-    foreach($v in $arr) {
-        if ($v -gt 0xFFFF) { $out += [char]::ConvertFromUtf32($v) }
-        else { $out += [char]$v }
-    }
-    return $out
-}
-
-# Title and Description
-#    -WinFlexOS
-$wTitHe = He @(0x1F680, 0x20, 0x5D1, 0x5E8, 0x5D5, 0x5DB, 0x5D9, 0x5DD, 0x20, 0x5D4, 0x5D1, 0x5D0, 0x5D9, 0x5DD, 0x20, 0x5DC, 0x2D, 0x57, 0x69, 0x6E, 0x46, 0x6C, 0x65, 0x78, 0x4F, 0x53)
-# $WelcomeTitle.Text = L $wTitHe " Welcome to WinFlexOS"
-
-#  .  .
-$wDesHe = He @(0x5D4, 0x5D2, 0x5E8, 0x5E1, 0x5D4, 0x20, 0x5E9, 0x5DC, 0x5DA, 0x2E, 0x20, 0x5D4, 0x5E9, 0x5DC, 0x5D9, 0x5D8, 0x5D4, 0x20, 0x5E9, 0x5DC, 0x5DA, 0x2E)
-# $WelcomeDesc.Text = L $wDesHe "Your version. Your control."
-
-#  []
-$wGreHe = (He @(0x5E9, 0x5DC, 0x5D5, 0x5DD, 0x20)) + $userName
-$WelcomeBodyTitle.Text = L $wGreHe "Hello $userName"
-
-# Large Body Text - Broken into chunks for safety
-$b1 = He @(0x05D1, 0x05E8, 0x05D5, 0x05DB, 0x05D9, 0x05DD, 0x0020, 0x05D4, 0x05D1, 0x05D0, 0x05D9, 0x05DD, 0x0020, 0x05DC, 0x002D, 0x0057, 0x0069, 0x006E, 0x0046, 0x006C, 0x0065, 0x0078, 0x004F, 0x0053, 0x0021, 0x000A)
-$b2 = He @(0x05DC, 0x05E8, 0x05E9, 0x05D5, 0x05EA, 0x05DB, 0x05DD, 0x0020, 0x05EA, 0x05E4, 0x05E8, 0x05D9, 0x05D8, 0x0020, 0x05D4, 0x05EA, 0x05E7, 0x05E0, 0x05D5, 0x05EA, 0x0020, 0x05DE, 0x05D5, 0x05E8, 0x05D7, 0x05D1, 0x000A)
-$b3 = He @(0x05E9, 0x05EA, 0x05E4, 0x05E7, 0x05D9, 0x05D3, 0x05D5, 0x0020, 0x05DC, 0x05D0, 0x05E4, 0x05E9, 0x05E8, 0x0020, 0x05DC, 0x05DB, 0x05DD, 0x0020, 0x05E9, 0x05DC, 0x05D9, 0x05D8, 0x05D4, 0x0020, 0x05DE, 0x05DC, 0x05D0, 0x05D4, 0x0020, 0x05E2, 0x05DC, 0x0020, 0x05DE, 0x05D4, 0x0020, 0x05E9, 0x05DE, 0x05D5, 0x05EA, 0x05E7, 0x05DF, 0x002E, 0x000A, 0x000A)
-$b4 = He @(0xD83D, 0xDEE0, 0xFE0F, 0x0020, 0x05E2, 0x05DC, 0x0020, 0x05D4, 0x05DE, 0x05E2, 0x05E8, 0x05DB, 0x05EA, 0x000A, 0x000A)
-$b5 = He @(0x0057, 0x0069, 0x006E, 0x0046, 0x006C, 0x0065, 0x0078, 0x004F, 0x0053, 0x0020, 0x05D4, 0x05D9, 0x05D0, 0x0020, 0x05DC, 0x05D0, 0x0020, 0x05E1, 0x05EA, 0x05DD, 0x0020, 0x05E2, 0x05D5, 0x05D3, 0x0020, 0x05D4, 0x05EA, 0x05E7, 0x05E0, 0x05D4, 0x002E, 0x0020, 0x05D4, 0x05D9, 0x05D0, 0x0020, 0x05E4, 0x05E8, 0x05D5, 0x05D9, 0x05E7, 0x05D8, 0x0020, 0x05E9, 0x05DC, 0x0020, 0x05D0, 0x05D5, 0x05E4, 0x05D8, 0x05D9, 0x05DE, 0x05D9, 0x05D6, 0x05E6, 0x05D9, 0x05D4, 0x0020, 0x05D5, 0x05D3, 0x05D9, 0x05D5, 0x05E7, 0x003A, 0x000A, 0x000A)
-$b6 = He @(0x2022, 0x0020, 0x05D1, 0x05D9, 0x05E6, 0x05D5, 0x05E2, 0x05D9, 0x05DD, 0x0020, 0x05DE, 0x05E7, 0x05E1, 0x05D9, 0x05DE, 0x05DC, 0x05D9, 0x05D9, 0x05DD, 0x003A, 0x0020, 0x05D4, 0x05E1, 0x05E8, 0x05EA, 0x0020, 0x05E8, 0x05DB, 0x05D9, 0x05D1, 0x05D9, 0x05DD, 0x0020, 0x05DE, 0x05D9, 0x05D5, 0x05EA, 0x05E8, 0x05D9, 0x05DD, 0x0020, 0x0028, 0x0042, 0x006C, 0x006F, 0x0061, 0x0074, 0x0077, 0x0061, 0x0072, 0x0065, 0x0029, 0x0020, 0x05DB, 0x05D3, 0x05D9, 0x0020, 0x05DC, 0x05D4, 0x05D1, 0x05D8, 0x05D9, 0x05D7, 0x0020, 0x05DE, 0x05D4, 0x05D9, 0x05E8, 0x05D5, 0x05EA, 0x0020, 0x05EA, 0x05D2, 0x05D5, 0x05D1, 0x05D4, 0x0020, 0x05E9, 0x05D9, 0x05D0, 0x002E, 0x000A, 0x000A)
-$b7 = He @(0x2022, 0x0020, 0x05DE, 0x05D9, 0x05E0, 0x05D9, 0x05DE, 0x05DC, 0x05D9, 0x05D6, 0x05DD, 0x0020, 0x05D7, 0x05DB, 0x05DD, 0x003A, 0x0020, 0x05DE, 0x05DE, 0x05E9, 0x05E7, 0x0020, 0x05E0, 0x05E7, 0x05D9, 0x0020, 0x05E9, 0x05DE, 0x05D0, 0x05E4, 0x05E9, 0x05E8, 0x0020, 0x05DC, 0x05DA, 0x0020, 0x05DC, 0x05D4, 0x05EA, 0x05E8, 0x05DB, 0x05D6, 0x0020, 0x05D1, 0x05DE, 0x05D4, 0x0020, 0x05E9, 0x05D7, 0x05E9, 0x05D5, 0x05D1, 0x002C, 0x0020, 0x05D1, 0x05DC, 0x05D9, 0x0020, 0x05D4, 0x05E4, 0x05E8, 0x05E2, 0x05D5, 0x05EA, 0x0020, 0x05E8, 0x05E7, 0x05E2, 0x002E, 0x000A, 0x000A)
-$b7a = He @(0x2022, 0x0020, 0x05DB, 0x05DC, 0x05D9, 0x0020, 0x05D0, 0x05D1, 0x05D7, 0x05D5, 0x05DF, 0x0020, 0x05DE, 0x05D5, 0x05D1, 0x05E0, 0x05D9, 0x05DD, 0x003A, 0x0020, 0x05E9, 0x05D9, 0x05DC, 0x05D5, 0x05D1, 0x0020, 0x05E9, 0x05DC, 0x0020, 0x05E1, 0x05E7, 0x05E8, 0x05D9, 0x05E4, 0x05D8, 0x05D9, 0x05DD, 0x0020, 0x05DE, 0x05EA, 0x05E7, 0x05D3, 0x05DE, 0x05D9, 0x05DD, 0x0020, 0x0028, 0x05DB, 0x05DE, 0x05D5, 0x0020, 0x05D4, 0x002D, 0x0050, 0x006F, 0x0077, 0x0065, 0x0072, 0x0053, 0x0068, 0x0065, 0x006C, 0x006C, 0x0020, 0x0047, 0x0055, 0x0049, 0x0020, 0x05E9, 0x05E4, 0x05D9, 0x05EA, 0x05D7, 0x05E0, 0x05D5, 0x0029, 0x0020, 0x05DC, 0x05E0, 0x05D9, 0x05D4, 0x05D5, 0x05DC, 0x0020, 0x05D5, 0x05EA, 0x05E7, 0x05D9, 0x05E0, 0x05D5, 0x05EA, 0x0020, 0x05D4, 0x05DE, 0x05D7, 0x05E9, 0x05D1, 0x0020, 0x05D1, 0x05DC, 0x05D7, 0x05D9, 0x05E6, 0x05EA, 0x0020, 0x05DB, 0x05E4, 0x05EA, 0x05D5, 0x05E8, 0x002E, 0x000A, 0x000A)
-$b7b = He @(0x2022, 0x0020, 0x05D2, 0x05DE, 0x05D9, 0x05E9, 0x05D5, 0x05EA, 0x0020, 0x0028, 0x0046, 0x006C, 0x0065, 0x0078, 0x0029, 0x003A, 0x0020, 0x05D4, 0x05DE, 0x05E2, 0x05E8, 0x05DB, 0x05EA, 0x0020, 0x05E0, 0x05D1, 0x05E0, 0x05EA, 0x05D4, 0x0020, 0x05DB, 0x05D3, 0x05D9, 0x0020, 0x05DC, 0x05D4, 0x05D9, 0x05D5, 0x05EA, 0x0020, 0x05D5, 0x05E8, 0x05E1, 0x05D8, 0x05D9, 0x05DC, 0x05D9, 0x05EA, 0x0020, 0x2013, 0x0020, 0x05D1, 0x05D9, 0x05DF, 0x0020, 0x05D0, 0x05DD, 0x0020, 0x05D6, 0x05D4, 0x0020, 0x05DC, 0x05E2, 0x05D1, 0x05D5, 0x05D3, 0x05D4, 0x0020, 0x05D1, 0x002D, 0x0056, 0x004D, 0x0020, 0x05D5, 0x05D1, 0x05D9, 0x05DF, 0x0020, 0x05D0, 0x05DD, 0x0020, 0x05DC, 0x05DE, 0x05DB, 0x05D5, 0x05E0, 0x05D4, 0x0020, 0x05E4, 0x05D9, 0x05D6, 0x05D9, 0x05EA, 0x002E, 0x000A)
-$b8 = He @(0x000A)
-$b9 = He @(0x05D0, 0x05D9, 0x05DA, 0x0020, 0x05DE, 0x05E9, 0x05EA, 0x05DE, 0x05E9, 0x05D9, 0x05DD, 0x0020, 0x05D1, 0x05EA, 0x05E4, 0x05E8, 0x05D9, 0x05D8, 0x0020, 0x05D4, 0x05D4, 0x05EA, 0x05E7, 0x05E0, 0x05D5, 0x05EA, 0x003F, 0x000A)
-$b10 = He @(0x0031, 0x002E, 0x0020, 0x05D1, 0x05E8, 0x05D2, 0x05E2, 0x0020, 0x05E9, 0x05EA, 0x05DE, 0x05E9, 0x05D9, 0x05DB, 0x05D5, 0x002C, 0x0020, 0x05D4, 0x05DE, 0x05E2, 0x05E8, 0x05DB, 0x05EA, 0x0020, 0x05EA, 0x05D1, 0x05E6, 0x05E2, 0x0020, 0x05E1, 0x05E8, 0x05D9, 0x05E7, 0x05EA, 0x0020, 0x05E8, 0x05E9, 0x05EA, 0x002E, 0x000A)
-$b11 = He @(0x0032, 0x002E, 0x0020, 0x05DC, 0x05D0, 0x05D7, 0x05E8, 0x0020, 0x05DE, 0x05DB, 0x05DF, 0x002C, 0x0020, 0x05D9, 0x05D5, 0x05E6, 0x05D2, 0x0020, 0x05DC, 0x05DB, 0x05DD, 0x0020, 0x05EA, 0x05E4, 0x05E8, 0x05D9, 0x05D8, 0x0020, 0x05E7, 0x05D8, 0x05D2, 0x05D5, 0x05E8, 0x05D9, 0x05D5, 0x05EA, 0x0020, 0x05E0, 0x05D5, 0x05D7, 0x0020, 0x05D1, 0x05D7, 0x05DC, 0x05E7, 0x05D5, 0x0020, 0x05D4, 0x05E6, 0x05D9, 0x05D3, 0x05D9, 0x0020, 0x05E9, 0x05DC, 0x0020, 0x05D4, 0x05DE, 0x05E1, 0x05DA, 0x002E, 0x000A)
-$b12 = He @(0x0033, 0x002E, 0x0020, 0x05D1, 0x05D7, 0x05E8, 0x05D5, 0x0020, 0x05D0, 0x05EA, 0x0020, 0x05D4, 0x05E7, 0x05D8, 0x05D2, 0x05D5, 0x05E8, 0x05D9, 0x05D5, 0x05EA, 0x0020, 0x05D4, 0x05E9, 0x05D5, 0x05E0, 0x05D5, 0x05EA, 0x0020, 0x05D5, 0x05E1, 0x05DE, 0x05E0, 0x05D5, 0x0020, 0x05D0, 0x05D9, 0x05DC, 0x05D5, 0x0020, 0x05EA, 0x05D5, 0x05DB, 0x05E0, 0x05D5, 0x05EA, 0x0020, 0x05EA, 0x05E8, 0x05E6, 0x05D5, 0x0020, 0x05DC, 0x05D4, 0x05EA, 0x05E7, 0x05D9, 0x05DF, 0x002E, 0x000A)
-$b13 = He @(0x0034, 0x002E, 0x0020, 0x05D1, 0x05E1, 0x05D9, 0x05D5, 0x05DD, 0x0020, 0x05D4, 0x05D1, 0x05D7, 0x05D9, 0x05E8, 0x05D4, 0x002C, 0x0020, 0x05DC, 0x05D7, 0x05E6, 0x05D5, 0x0020, 0x05E2, 0x05DC, 0x0020, 0x0027, 0x05D4, 0x05D1, 0x05D0, 0x0027, 0x002C, 0x0020, 0x05D5, 0x05D4, 0x05DE, 0x05E2, 0x05E8, 0x05DB, 0x05EA, 0x0020, 0x05EA, 0x05EA, 0x05D7, 0x05D9, 0x05DC, 0x0020, 0x05D1, 0x05D4, 0x05EA, 0x05E7, 0x05E0, 0x05D4, 0x0020, 0x05E9, 0x05E7, 0x05D8, 0x05D4, 0x0020, 0x05D1, 0x05E8, 0x05E7, 0x05E2, 0x0021, 0x000A)
-$b14 = He @(0x000A)
-$b15 = He @(0x05DC, 0x05D7, 0x05E6, 0x05D5, 0x0020, 0x05E2, 0x05DC, 0x0020, 0x0027, 0x05D4, 0x05D1, 0x05D0, 0x0027, 0x0020, 0x05DB, 0x05D3, 0x05D9, 0x0020, 0x05DC, 0x05D4, 0x05DE, 0x05E9, 0x05D9, 0x05DA, 0x002C, 0x0020, 0x05D0, 0x05D5, 0x0020, 0x05E2, 0x05DC, 0x0020, 0x0027, 0x05DC, 0x05D0, 0x0020, 0x05DE, 0x05E2, 0x05D5, 0x05E0, 0x05D9, 0x05D9, 0x05DF, 0x0027, 0x0020, 0x05DB, 0x05D3, 0x05D9, 0x0020, 0x05DC, 0x05E6, 0x05D0, 0x05EA, 0x0020, 0x05DE, 0x05DB, 0x05D0, 0x05DF, 0x002E)
-$WelcomeIntroText.Text=(L ($b1+$b2+$b3) "").Trim();
-$AboutTitleText.Text=(L (He @(0x05D9,0x05EA,0x05E8,0x05D5,0x05E0,0x05D5,0x05EA,0x0020,0x05D4,0x05DE,0x05E2,0x05E8,0x05DB,0x05EA)) "System Advantages")
-$AboutBodyText.Text=(L ($b5+$b6+$b7+$b7b) "").Trim()
-$UsageTitleText.Text=(L $b9 "").Trim()
-$UsageBodyText.Text=(L ($b10+$b11+$b12+$b13) "").Trim(); $HintText.Text=(L $b15 "").Trim()
-Apply-Language
-
-# Preflight
-$phHe = He @(0x05D1, 0x05D5, 0x05D3, 0x05E7, 0x20, 0x05D7, 0x05D9, 0x05D1, 0x05D5, 0x05E8, 0x20, 0x2D, 0x57, 0x69, 0x6E, 0x67, 0x65, 0x74)
-$psHe = He @(0x05DE, 0x05DE, 0x05EA, 0x05D9, 0x05E0, 0x05D9, 0x05DD, 0x2E, 0x2E, 0x2E)
-$PreflightHeader.Text = L $phHe "Checking connectivity & Winget..."
-$PreflightStatus.Text = L $psHe "Please wait..."
-
-if ($SkipWelcome) {
-    Write-Log "Starting in SkipWelcome mode"
-    $StartupOverlay.Visibility = 'Collapsed'
-    $MainBorder.Visibility = 'Visible'
-    $MainArea.IsEnabled = $true
-    $MainArea.Opacity = 1
-    
-    if ($MenuPath -and (Test-Path -LiteralPath $MenuPath)) {
-        Write-Log "Loading menu from parameter path: $MenuPath"
-        . $MenuPath
-    } else {
-        try {
-            Write-Log "Loading built-in menu"
-            Initialize-WFMenuData
-        } catch {
-            Write-Log "Failed to load menu: $_"
-            [System.Windows.MessageBox]::Show("Error loading menu: " + $_.Exception.Message)
-            $window.Close()
-            exit
-        }
-    }
-    Initialize-CategoryVms
-    Render-SideMenu
-    Show-Category
-    Play-Sound
-}
-$window.Add_Loaded({
-    $introPath = Join-Path $script:scriptDir "intro.mp4"
-    if (Test-Path -LiteralPath $introPath) {
-        $IntroOverlay.Visibility = 'Visible'
-        $IntroVideo.Source = [Uri]::new($introPath)
-        $IntroVideo.Play()
-    }
-})
-$BtnSkipIntro.Add_Click({
-    $IntroVideo.Stop()
-    $IntroOverlay.Visibility = 'Collapsed'
-})
-$IntroVideo.Add_MediaEnded({
-    $IntroOverlay.Visibility = 'Collapsed'
-})
-
-$window.ShowDialog()|Out-Null
 }

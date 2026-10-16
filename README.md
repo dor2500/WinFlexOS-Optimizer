@@ -1,6 +1,6 @@
 # 🚀 WinFlexSetupModern
 
-**WinFlexSetupModern** is a Windows optimization & setup tool written in PowerShell. It scans your PC's hardware and applies targeted optimizations based on your usage profile — with a System Restore Point, a full HTML report of every change, and one-click UNDO. A graphical app (WPF) with a winget app installer is built in as well.
+**WinFlexSetupModern** is a Windows optimization & setup tool written in PowerShell. It scans your PC's hardware and applies targeted optimizations based on your usage profile — with a System Restore Point, a full HTML report of every change, and one-click UNDO.
 
 ---
 
@@ -13,10 +13,11 @@
 irm https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master/WinFlexSetupModern.ps1 | iex
 ```
 
-The script audits your hardware and shows the profile menu:
+The script shows a short summary of your PC and the profile menu, grouped into Performance, Privacy & Debloat, Maintenance and Tools:
 - Pick one profile (`1`) or several (`1,8,12`).
-- You then see exactly what will run and choose **Run**, **Preview only** (a report of what *would* change, nothing is touched) or **Cancel**.
-- Press **G** to open the graphical app instead (apps installer, tweaks, profiles).
+- You then see exactly what will run and choose **Run**, **Preview only** (a report of what *would* change, nothing is touched) or **Back** to the menu.
+- While it runs, the screen shows only what changes (or fails); everything else is in the report and the log.
+- At the end you get a summary (changed / failed / space freed) and the report opens with one key.
 
 Everything is in this one file. If PowerShell is not running as Administrator, the script asks for elevation by itself.
 
@@ -25,9 +26,9 @@ You can also download `WinFlexSetupModern.ps1` from the [latest release](https:/
 ### Advanced
 
 ```powershell
-.\WinFlexSetupModern.ps1 -Gui                     # open the graphical app directly
 .\WinFlexSetupModern.ps1 -ProfileId 1,8,12        # run profiles without the menu
 .\WinFlexSetupModern.ps1 -ProfileId 7 -DryRun     # preview only - changes nothing, still writes the report
+.\WinFlexSetupModern.ps1 -Detailed                # also print items that were already OK / not present
 ```
 
 ---
