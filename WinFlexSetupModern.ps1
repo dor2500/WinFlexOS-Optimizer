@@ -31,7 +31,7 @@ param(
     [string]$ReportDir = ''       # where to save the HTML report (default: Desktop)
 )
 
-$script:WFVersion = '6.4.1'
+$script:WFVersion = '6.4.2'
 $script:RawBase   = 'https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master'
 
 # ==============================================================================
@@ -498,11 +498,36 @@ function Get-WFServiceStartMode {
     return @{ Mode = $mode; Delayed = $delayed }
 }
 
+# Remote access must never be broken by an optimization: these services (and any service whose
+# name or display name matches the pattern) are never disabled, whatever a profile asks for.
+$script:WFRemoteAccessServices = @('TermService', 'SessionEnv', 'UmRdpService', 'WinRM', 'RasMan', 'SSDPSRV', 'upnphost',
+    'FDResPub', 'fdPHost', 'lmhosts', 'LanmanServer', 'LanmanWorkstation', 'Dnscache', 'NlaSvc', 'iphlpsvc', 'mpssvc', 'BFE', 'RemoteRegistry')
+$script:WFRemoteAccessPattern = '(?i)anydesk|teamviewer|rustdesk|parsec|sunshine|chrome.?remote|splashtop|vnc|tailscale|zerotier|radmin|nomachine|logmein|screenconnect|remotepc|supremo|ammyy|meshagent|quick ?assist|remote desktop'
+
+function Test-WFRemoteAccessService {
+    param([string]$Name, [string]$DisplayName = '')
+    return (($script:WFRemoteAccessServices -contains $Name) -or ($Name -match $script:WFRemoteAccessPattern) -or ($DisplayName -match $script:WFRemoteAccessPattern))
+}
+
+function Get-WFRemoteAccessTools {
+    # Remote-control tools present on this PC (shown to the user as "protected").
+    $found = @()
+    foreach ($s in @(Get-Service -ErrorAction SilentlyContinue)) {
+        if ($s.Name -match $script:WFRemoteAccessPattern -or $s.DisplayName -match $script:WFRemoteAccessPattern) { $found += $s.DisplayName }
+    }
+    try { if ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -ErrorAction Stop).fDenyTSConnections -eq 0) { $found += 'Remote Desktop (RDP)' } } catch {}
+    return @($found | Where-Object { $_ -notmatch '^Remote Desktop (Services|Configuration)' } | Select-Object -Unique)
+}
+
 function Disable-WFService {
     param([string]$Name, [string]$Desc = '', [string]$Category = 'Services')
     $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
     if (-not $svc) {
         Add-WFAction -Category $Category -Type 'Service' -Target $Name -Action "Disable service  ($Desc)" -Status NotFound -Detail 'This service does not exist on this PC - nothing was disabled.' | Out-Null
+        return
+    }
+    if (Test-WFRemoteAccessService $Name $svc.DisplayName) {
+        Add-WFAction -Category $Category -Type 'Service' -Target $Name -Action "Disable service  ($Desc)" -Status Skipped -Detail 'Protected: remote access / network discovery service - never disabled by this script.' | Out-Null
         return
     }
     $disp = if ($svc.DisplayName) { $svc.DisplayName } else { $Name }
@@ -2096,7 +2121,13 @@ function Invoke-BaseDebloat {
     # 1. Telemetry Services
     # (WaaSMedicSvc is intentionally NOT touched: it is protected and keeps Windows Update able to repair itself.)
     Disable-WFService -Name "DiagTrack" -Desc "Connected User Experiences and Telemetry" -Category "Telemetry"
-    Disable-WFService -Name "dmwappushservice" -Desc "Device Management Wireless Application Protocol Routing" -Category "Telemetry"
+    # dmwappushservice also delivers MDM (Intune / work-school) remote management - keep it on managed PCs.
+    $mdm = @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Enrollments' -ErrorAction SilentlyContinue | Where-Object { (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).ProviderID })
+    if ($mdm.Count) {
+        Add-WFAction -Category 'Telemetry' -Type 'Service' -Target 'dmwappushservice' -Action 'Disable service  (Device Management WAP Push)' -Status Skipped -Detail 'This PC is managed by an organization (MDM) - the service is needed for remote management.' | Out-Null
+    } else {
+        Disable-WFService -Name "dmwappushservice" -Desc "Device Management Wireless Application Protocol Routing" -Category "Telemetry"
+    }
     Disable-WFService -Name "WerSvc" -Desc "Windows Error Reporting Service" -Category "Telemetry"
 
     # 2. Cortana & Start Menu Search
@@ -2344,9 +2375,8 @@ function Invoke-ProfileNetworkSupercharger {
     Set-WFNetshTcp -Setting "autotuninglevel" -Value "normal" -Desc "Enable TCP window auto-tuning" -Category "Network"
     Set-WFNetshTcp -Setting "rss" -Value "enabled" -Desc "Receive Side Scaling (multithreaded packet processing)" -Category "Network"
     Set-WFNetshTcp -Setting "fastopen" -Value "enabled" -Desc "TCP Fast Open for web sockets" -Category "Network"
-
-    # Disable LLMNR & NetBIOS over TCP/IP (Security & latency)
-    Set-WFReg -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient" -Name "EnableMulticast" -Value 0 -Type DWord -Desc "Disable Link-Local Multicast Name Resolution (LLMNR)" -Category "Network"
+    # (LLMNR is not touched here: turning it off gives no speed and can stop PCs finding each other by name.
+    #  It is part of Security Hardening instead.)
 
     # Flush DNS cache
     Invoke-WFOneShot -Category "Network" -Type "System" -Target "DNS Cache" -Action "Flush DNS Resolver Cache" -Script {
@@ -2413,6 +2443,10 @@ function Invoke-ProfileSecurityHardening {
 
     # Hide Account Info on Lock Screen
     Set-WFReg -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "dontdisplaylastusername" -Value 1 -Type DWord -Desc "Hide last logged in username on lock screen" -Category "Security"
+
+    # LLMNR name-poisoning protection (moved here from Network Supercharger). DNS names keep working;
+    # only name lookups that rely on LLMNR (no DNS) are affected - remote tools by ID/IP are not.
+    Set-WFReg -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient" -Name "EnableMulticast" -Value 0 -Type DWord -Desc "Disable LLMNR (blocks name-poisoning attacks on local networks)" -Category "Security"
 }
 
 function Invoke-ProfileNuclearDebloat {
@@ -2457,9 +2491,9 @@ function Invoke-ProfileNuclearDebloat {
         @{ Name = "RetailDemo"; Desc = "Retail Demo Service" },
         @{ Name = "MapsBroker"; Desc = "Downloaded Maps Manager" },
         @{ Name = "PhoneSvc"; Desc = "Phone Service (Your Phone sync)" },
-        @{ Name = "lfsvc"; Desc = "Geolocation Service" },
-        @{ Name = "RemoteRegistry"; Desc = "Remote Registry Service" }
+        @{ Name = "lfsvc"; Desc = "Geolocation Service" }
     )
+    # RemoteRegistry is not touched: Windows already ships it disabled, and remote management tools may need it.
     # SharedAccess is kept: disabling it breaks the Mobile Hotspot feature.
     # Sensor services drive auto-rotation and adaptive brightness, so they are only disabled on desktops.
     if (-not $script:IsLaptop) {
@@ -2759,7 +2793,7 @@ $script:WFProfileDesc = @{
     '10' = 'TCP tuning, LLMNR off, DNS cache flush'
     '11' = 'Debloat + Privacy + Copilot/Widgets/Edge + cleanup'
     '12' = 'Temp, update cache, crash dumps, SSD TRIM'
-    '13' = 'WPAD, Remote Assistance and AutoPlay off'
+    '13' = 'WPAD, LLMNR, Remote Assistance, AutoPlay off'
 }
 
 function Get-WFLastRun {
@@ -2792,7 +2826,7 @@ function Show-WFMenu {
     Write-WFRaw " [10]  Network Supercharger - TCP/IP stack tune, DNS cache flush, heuristics off."
     Write-WFRaw " [11]  Ultra-Deep Nuclear Debloat - Extreme stripping (Edge, Copilot, Widgets, background tasks)." 'Red'
     Write-WFRaw " [12]  Deep System Cleanup - Temp, Windows Update cache, crash dumps, SSD TRIM." 'Yellow'
-    Write-WFRaw " [13]  Security Hardening - Disable WPAD, remote assistance, lock screen privacy." 'Green'
+    Write-WFRaw " [13]  Security Hardening - Disable WPAD, LLMNR, Windows Remote Assistance, lock screen privacy." 'Green'
     Write-WFRaw ""
     Write-WFRaw " [Q]   Quit" 'DarkGray'
     Write-WFRaw ""
@@ -2823,6 +2857,11 @@ function Confirm-WFProfiles {
         Write-WFRaw '    Also runs Base Debloat: telemetry services off, consumer apps removed.' 'DarkGray'
     }
     if ($Profiles -contains '11') { Write-WFRaw '    Nuclear Debloat is the strongest profile - consider a preview first.' 'Red' }
+    $remoteTools = @(Get-WFRemoteAccessTools)
+    if ($remoteTools.Count) {
+        Write-WFRaw ('    Remote access protected (never disabled): ' + ($remoteTools -join ', ')) 'Green'
+    }
+    if ($Profiles -contains '13') { Write-WFRaw '    Security Hardening turns off Windows Remote Assistance only - RDP, AnyDesk, TeamViewer etc. keep working.' 'DarkGray' }
     Write-WFRaw '    A System Restore Point is created first. Everything can be undone with 6.' 'DarkGray'
     Write-WFRaw ''
     while ($true) {
