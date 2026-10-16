@@ -58,7 +58,11 @@ Every run creates an interactive HTML report on the Desktop listing each service
 
 ## ⚠️ Disclaimer & Safety
 * **Restore Point**: A System Restore Point is created before any change. If it cannot be created, the engine asks before continuing.
-* **UNDO**: Profile 6 restores every recorded change, even from a run that was interrupted. Removed apps get a direct Microsoft Store link in the report so they can be reinstalled in one click.
+* **Pre-checks**: before changing anything you are warned about a pending Windows Update restart, low disk space (restore point may fail) or a laptop running low on battery.
+* **UNDO**: Profile 6 restores every recorded change, even from a run that was interrupted. If several runs can be undone, you choose which one. Removed apps get a direct Microsoft Store link in the report so they can be reinstalled in one click.
+* **Remote access is protected**: remote desktop and remote control tools (RDP, AnyDesk, TeamViewer, RustDesk, Parsec, Sunshine, NoMachine, Tailscale...) and network discovery services are never disabled.
+* **Windows Update safe**: the update cache is never cleaned while an update is installing or waiting for a restart.
 * **Restart**: when a change needs a restart, the script offers to restart (30-second countdown, cancel with `shutdown /a`).
+* **Updates**: a downloaded copy tells you when a newer version is available on GitHub.
 * **Open Source**: The code is 100% transparent — read `WinFlexSetupModern.ps1` to see exactly which registry keys and services are modified.
 * **Usage**: Use at your own risk. This tool is intended for advanced users who want to maximize their hardware's potential.
