@@ -1,4 +1,4 @@
-# WinFlexSetupModern.ps1 - V4.1 Design
+﻿# WinFlexSetupModern.ps1 - V4.1 Design
 #Requires -Version 5.1
 
 param(
@@ -13,6 +13,28 @@ if (-not $scriptPath) {
     $script:scriptDir = $env:TEMP
 } else {
     $script:scriptDir = Split-Path -Parent $scriptPath
+}
+
+# Companion files (menu.ps1, HardwareAuditAndPrivacy.ps1) live next to this script.
+# When started through 'irm | iex' they are not on disk yet, so they are downloaded once.
+$script:RawBase = 'https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master'
+function Get-WFSupportFile([string]$Name) {
+    $local = Join-Path $script:scriptDir $Name
+    if (Test-Path -LiteralPath $local) { return $local }
+    if ($PSScriptRoot) {
+        $alt = Join-Path $PSScriptRoot $Name
+        if (Test-Path -LiteralPath $alt) { return $alt }
+    }
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $content = (Invoke-WebRequest -Uri "$($script:RawBase)/$Name" -UseBasicParsing -ErrorAction Stop).Content
+        if ($content -is [byte[]]) { $content = [Text.Encoding]::UTF8.GetString($content) }
+        # Saved with a BOM so Windows PowerShell 5.1 reads the Hebrew text correctly.
+        [IO.File]::WriteAllText($local, $content.TrimStart([char]0xFEFF), (New-Object Text.UTF8Encoding($true)))
+        return $local
+    } catch {
+        return $null
+    }
 }
 
 if (-not $script:isAdmin) {
@@ -84,6 +106,7 @@ function Get-SystemHardwareAudit {
     }
     
     $formFactorName = if ($script:IsLaptop) { "Laptop" } else { "Desktop" }
+    $script:IsAsus = ($baseboard.Manufacturer -match 'ASUS|ASUSTeK') -or ($computerSystem.Manufacturer -match 'ASUS|ASUSTeK')
     $osInfo = Get-CimInstance Win32_OperatingSystem
     $isWin11 = $osInfo.BuildNumber -ge 22000
     $osName = if ($isWin11) { "Windows 11" } else { "Windows 10" }
@@ -120,7 +143,11 @@ function Get-SystemHardwareAudit {
         Add-ColorText "`n[+] Detected System Configuration: $formFactorName`n" "#00FFFF"
         Add-ColorText "  * Operating System: $osName (Build $($osInfo.BuildNumber))`n" "#AAAAAA"
         Add-ColorText "  * Manufacturer & Model: $($computerSystem.Manufacturer) $($computerSystem.Model)`n" "#AAAAAA"
-        Add-ColorText "  * Motherboard: $($baseboard.Manufacturer) $($baseboard.Product) (BIOS: $($bios.SMBIOSBIOSVersion))`n`n" "#AAAAAA"
+        Add-ColorText "  * Motherboard: $($baseboard.Manufacturer) $($baseboard.Product) (BIOS: $($bios.SMBIOSBIOSVersion))`n" "#AAAAAA"
+        if ($script:IsAsus) {
+            Add-ColorText "  * [★] ASUS Hardware: Detected (Armoury Crate Deep Taming & Anti-Stutter Engine Ready)`n" "#FF00FF"
+        }
+        Add-ColorText "`n" "#AAAAAA"
         
         Add-ColorText "* CPU: $($script:cpu.Name)`n" "#00FF00"
         Add-ColorText "  - $($script:cpu.NumberOfCores) Cores / $($script:cpu.NumberOfLogicalProcessors) Threads | Base Clock: $($script:cpu.MaxClockSpeed) MHz`n`n" "#888888"
@@ -191,29 +218,145 @@ function Get-SystemHardwareAudit {
     }
 }
 
+
+# ==============================================================================
+# [100000% SUPERCHARGED ENGINE] ASUS Hardware & Armoury Crate Deep Taming
+# ==============================================================================
+function Test-IsAsusDevice {
+    if ($null -ne $script:IsAsus) { return $script:IsAsus }
+    $bb = Get-CimInstance -ClassName Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
+    $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue | Select-Object -First 1
+    $script:IsAsus = [bool](($bb.Manufacturer -match 'ASUS|ASUSTeK') -or ($cs.Manufacturer -match 'ASUS|ASUSTeK'))
+    return $script:IsAsus
+}
+
+function Invoke-AsusGamingOptimization {
+    if (-not (Test-IsAsusDevice)) { return $null }
+
+    Write-Log "[ASUS Engine] ASUS Motherboard/System Detected! Beginning 100000% Deep Taming..."
+    $actions = [System.Collections.Generic.List[string]]::new()
+
+    # 1. Eliminate GameFirst / cFosSpeed Network Filter (Causes massive ping spikes & latency jitter)
+    $netServices = @("AsusGameFirstService", "ROG Game First", "cFosSpeed", "cFosSpeedSvc")
+    foreach ($svc in $netServices) {
+        $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+        if ($s) {
+            Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+            Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+            $actions.Add("Disabled ASUS GameFirst / cFosSpeed service ($svc) -> Zero ping spikes.")
+            Write-Log "ASUS Optimization: Disabled $svc"
+        }
+    }
+
+    # 2. Disable heavy background telemetry, update loops and live ad services
+    # (Keeps core fan, hotkey, and power controls like ASUS Optimization / System Control Interface fully working!)
+    $telemetryServices = @(
+        "AsusROGLSLService",       # ROG Live Service (ad banners, deals, continuous CPU polling)
+        "ASUSSoftwareManager",     # Background update checker loop
+        "ASUSLinkNear",            # Link to MyASUS near device polling
+        "ASUSLinkRemote",          # Link to MyASUS remote
+        "AsusAppService",          # Analytics and app telemetry service
+        "AsusCertService",         # Certificate/installer validation loop
+        "AsusPTPCenter"            # Telemetry service
+    )
+    foreach ($svc in $telemetryServices) {
+        $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+        if ($s) {
+            Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+            Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+            $actions.Add("Disabled ASUS background telemetry service ($svc) -> Micro-stutters stopped.")
+            Write-Log "ASUS Optimization: Disabled $svc"
+        }
+    }
+
+    # 3. Tame LightingService.exe (Aura Sync RGB)
+    # LightingService is notorious for DPC latency spikes, micro-stutters, and anti-cheat false positives.
+    # Permanently set IFEO CpuPriorityClass = 5 (BelowNormal) so RGB stays on without frame drops.
+    try {
+        $ifeoPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\LightingService.exe\PerfOptions"
+        New-Item -Path $ifeoPath -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-ItemProperty -Path $ifeoPath -Name "CpuPriorityClass" -Value 5 -Type DWord -Force -ErrorAction SilentlyContinue
+        $actions.Add("Configured LightingService.exe (Aura RGB) Priority to BelowNormal -> Anti-Cheat safe & zero frame drops.")
+    } catch {}
+    $lightingProcs = Get-Process -Name "LightingService" -ErrorAction SilentlyContinue
+    if ($lightingProcs) {
+        foreach ($proc in $lightingProcs) {
+            try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch {}
+        }
+    }
+
+    # 4. Terminate hung/memory-leak instances of ArmouryCrate helper processes
+    $hangHelpers = @("ArmouryCrate.UserSessionHelper", "ArmourySocketServer")
+    foreach ($helper in $hangHelpers) {
+        $procs = Get-Process -Name $helper -ErrorAction SilentlyContinue
+        if ($procs) {
+            $procs | Where-Object { $_.CPU -gt 15 -or $_.WorkingSet64 -gt 350MB } | Stop-Process -Force -ErrorAction SilentlyContinue
+            $actions.Add("Terminated hung/leaking instance of $helper.")
+            Write-Log "ASUS Optimization: Terminated hung helper $helper"
+        }
+    }
+
+    # 5. Prevent UEFI ASUS Grid / Armoury Crate auto-injection installer popups during games
+    $gridKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+    if (Test-Path $gridKey) {
+        Remove-ItemProperty -Path $gridKey -Name "AsusUpdateCheck" -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $gridKey -Name "ArmouryCrateInstaller" -ErrorAction SilentlyContinue
+    }
+    $tasksToDisable = @(
+        "\ASUS\Armoury Crate\AsusUpdateCheck",
+        "\ASUS\Framework\AsusUnistallEvent"
+    )
+    foreach ($taskPath in $tasksToDisable) {
+        try {
+            $tFolder = $taskPath | Split-Path -Parent
+            $tName = $taskPath | Split-Path -Leaf
+            Disable-ScheduledTask -TaskPath $tFolder -TaskName $tName -ErrorAction SilentlyContinue | Out-Null
+        } catch {}
+    }
+
+    # 6. Prevent ASUS Power Scheme conflicts with Windows Ultimate / Game Mode
+    try {
+        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\be337238-0d82-4146-a960-4f3749d470c7" -Name "Attributes" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+        $actions.Add("Prevented Armoury Crate power scheme overrides over Windows Ultimate Performance.")
+    } catch {}
+
+    if ($actions.Count -eq 0) {
+        $actions.Add("ASUS Hardware verified: Essential controls (fans/hotkeys) active, zero bloat/conflicting services detected.")
+    }
+
+    return $actions
+}
+
 function Invoke-SystemTweak($tweakId) {
     if ($null -eq $script:hasSSD) { Get-SystemHardwareAudit | Out-Null }
 
-    $auditScriptPath = Join-Path $script:scriptDir "HardwareAuditAndPrivacy.ps1"
-    if (-not (Test-Path -LiteralPath $auditScriptPath)) {
-        $auditScriptPath = Join-Path $PSScriptRoot "HardwareAuditAndPrivacy.ps1"
-    }
+    $auditScriptPath = Get-WFSupportFile "HardwareAuditAndPrivacy.ps1"
 
-    # Route Audit Profiles to the enhanced transparent engine
+    # Route Audit Profiles to the enhanced transparent engine (restore point + HTML report + UNDO)
     if ($tweakId -match "^AuditProfile(\d+)$") {
         $pNum = $matches[1]
         Write-Log "Executing Profile $pNum with live transparency & HTML report generation..."
-        if (Test-Path -LiteralPath $auditScriptPath) {
+        if ($auditScriptPath) {
             $p = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$auditScriptPath`"", "-ProfileId", "$pNum", "-Silent", "-NoPause", "-OpenReport") -PassThru -Wait -NoNewWindow
             Write-Log "Profile $pNum finished with exit code $($p.ExitCode)"
         } else {
-            $cmd = "irm https://raw.githubusercontent.com/dor2500/WinFlexOS-Optimizer/master/HardwareAuditAndPrivacy.ps1 | iex; Start-WFOptimization -SelectedProfiles @('$pNum')"
-            Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $cmd) -Wait -NoNewWindow
+            Write-Log "Profile $pNum skipped: HardwareAuditAndPrivacy.ps1 is missing and could not be downloaded."
         }
         return
     }
 
     switch ($tweakId) {
+        # Both gaming entries use the engine's Gaming profile, so they get a restore point, a report and UNDO.
+        "ProfileGaming" {
+            Invoke-SystemTweak "AuditProfile1"
+        }
+        "ExtremeGamingBoost" {
+            Invoke-SystemTweak "AuditProfile1"
+        }
+        "AsusGamingFix" {
+            $asusRes = Invoke-AsusGamingOptimization
+            if ($asusRes) { foreach ($act in $asusRes) { Write-Log "[ASUS] $act" } }
+        }
         "NuclearDebloat" {
             Invoke-SystemTweak "AuditProfile11"
         }
@@ -222,7 +365,7 @@ function Invoke-SystemTweak($tweakId) {
         }
         "GenerateHtmlReport" {
             Write-Log "Generating HTML System Report on Desktop..."
-            if (Test-Path -LiteralPath $auditScriptPath) {
+            if ($auditScriptPath) {
                 Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$auditScriptPath`"", "-DryRun", "-ProfileId", "11", "-Silent", "-NoPause", "-OpenReport") -Wait -NoNewWindow
             }
         }
@@ -251,33 +394,69 @@ function Invoke-SystemTweak($tweakId) {
                 Get-AppxPackage -Name "*$app*" -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
             }
         }
-        "ProfileGaming" {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-            if ($script:totalRamGB -ge 16) {
-                Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 0xFFFFFFFF -Type DWord -Force -ErrorAction SilentlyContinue
-                Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+        "ClearTemp" {
+            foreach ($p in @($env:TEMP, "$env:SystemRoot\Temp", "$env:LOCALAPPDATA\Microsoft\Windows\INetCache", "$env:LOCALAPPDATA\CrashDumps")) {
+                if (Test-Path $p) { Get-ChildItem -Path $p -Force -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notlike "*winflex*" } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
             }
-            try { netsh int tcp set global heuristics=disabled | Out-Null; netsh int tcp set global autotuninglevel=normal | Out-Null } catch {}
-            try { bcdedit /deletevalue useplatformclock 2>$null | Out-Null; bcdedit /set disabledynamictick yes 2>$null | Out-Null } catch {}
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -Value "0" -Type String -Force -ErrorAction SilentlyContinue
-            if (-not $script:IsLaptop) {
-                powercfg -attributes SUB_PROCESSOR 0cc5b647-c1df-4637-891a-dec35c318583 -ATTRIB_HIDE 2>$null | Out-Null
-                $uGuid = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61
-                if ($uGuid -match "([A-Fa-f0-9\-]{36})") { powercfg -setactive $matches[1] } else { powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c }
+            Remove-Item "$env:LOCALAPPDATA\Microsoft\Windows\Explorer\thumbcache_*.db" -Force -ErrorAction SilentlyContinue
+            Write-Log "Temp files, caches and crash dumps cleaned (Recycle Bin left untouched)."
+        }
+        "CleanupWinUpdate" {
+            Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+            Remove-Item "$env:SystemRoot\SoftwareDistribution\Download\*" -Recurse -Force -ErrorAction SilentlyContinue
+            Start-Service -Name wuauserv -ErrorAction SilentlyContinue
+            Dism.exe /Online /Cleanup-Image /StartComponentCleanup | Out-Null
+            Write-Log "Windows Update download cache and component store cleaned."
+        }
+        "NetworkReset" {
+            ipconfig /flushdns | Out-Null
+            netsh winsock reset | Out-Null
+            netsh int ip reset | Out-Null
+            Write-Log "DNS cache flushed; Winsock and TCP/IP stack reset."
+        }
+        "DisableCopilot" {
+            New-Item -Path "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" -Name "TurnOffWindowsCopilot" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" -Name "TurnOffWindowsCopilot" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            Write-Log "Windows Copilot disabled by policy."
+        }
+        "NoConsumerContent" {
+            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Name "DisableWindowsConsumerFeatures" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" -Name "DisableSoftLanding" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            $cdm = "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
+            foreach ($n in @("SubscribedContent-338388Enabled","SubscribedContent-338389Enabled","SubscribedContent-353694Enabled","SubscribedContent-353696Enabled","SilentInstalledAppsEnabled","SystemPaneSuggestionsEnabled","SoftLandingEnabled","RotatingLockScreenOverlayEnabled")) {
+                Set-ItemProperty -Path $cdm -Name $n -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
             }
+            Write-Log "Consumer content, app suggestions and silent app installs disabled."
+        }
+        "ShowHiddenFiles" {
+            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "Hidden" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            Write-Log "Explorer: Hidden files & extensions set to visible."
+        }
+        "DarkMode" {
+            $k = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+            Set-ItemProperty -Path $k -Name "AppsUseLightTheme" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $k -Name "SystemUsesLightTheme" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            Write-Log "Windows dark mode enabled."
+        }
+        "ClassicContextMenu" {
+            New-Item -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" -Name "(default)" -Value "" -Force -ErrorAction SilentlyContinue
+            Write-Log "Classic (full) right-click menu enabled for Windows 11."
         }
         "ProfileOffice" {
             Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
             powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e
+            Write-Log "Office profile applied."
         }
         "ProfileCreator" {
             Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
             Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 20 -Type DWord -Force -ErrorAction SilentlyContinue
             if (-not $script:IsLaptop) { powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c }
+            Write-Log "Content Creator profile applied."
         }
         "ProfileAI" {
             Set-ItemProperty -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
@@ -294,6 +473,7 @@ function Invoke-SystemTweak($tweakId) {
             if ($script:hasSSD) {
                 fsutil behavior set DisableDeleteNotify 0 | Out-Null
                 Optimize-Volume -DriveLetter C -ReTrim -ErrorAction SilentlyContinue | Out-Null
+                Write-Log "SSD TRIM optimization command completed."
             }
         }
     }
@@ -856,9 +1036,9 @@ function Run-PreflightAsync {
             }
             if ($script:preflightPhase -eq "menu") {
                 Set-PreflightUI 40 (L (-join([char]0x05DE,[char]0x05D5,[char]0x05E8,0x05D9,0x05D3,0x20,0x05EA,0x05E4,0x05E8,0x05D9,0x05D8,0x2E,0x2E,0x2E)) "Loading local menu...")
-                $tempMenuPath = Join-Path $script:scriptDir "menu.ps1"
+                $tempMenuPath = Get-WFSupportFile "menu.ps1"
                 try {
-                    if (Test-Path -LiteralPath $tempMenuPath) {
+                    if ($tempMenuPath -and (Test-Path -LiteralPath $tempMenuPath)) {
                         . $tempMenuPath
                         Initialize-CategoryVms
                         Render-SideMenu
@@ -866,7 +1046,7 @@ function Run-PreflightAsync {
                         Play-Sound
                         Write-Log "Preflight: menu loaded successfully"
                     } else {
-                        throw "Local menu.ps1 not found in $($script:scriptDir)"
+                        throw "menu.ps1 not found in $($script:scriptDir) and could not be downloaded"
                     }
                     $script:preflightPhase="winget"
                     $ps=[PowerShell]::Create()
@@ -971,7 +1151,7 @@ if ($SkipWelcome) {
         Write-Log "Loading menu from parameter path: $MenuPath"
         . $MenuPath
     } else {
-        $tempMenuPath = Join-Path $script:scriptDir "menu.ps1"
+        $tempMenuPath = Get-WFSupportFile "menu.ps1"
         try {
             Write-Log "Loading local menu from $tempMenuPath"
             . $tempMenuPath

@@ -6,6 +6,7 @@ Version: 6.1 (Full transparency engine: live per-action log, HTML change report 
          6.1: fixed empty HTML report table, crash-safe UNDO journal (ProgramData\WinFlexOS\State),
               reverse-order UNDO for all change types, restore point check, Power Saver GUID,
               localized Ultimate Performance plan, background mode via 'irm | iex', safer debloat lists.
+         6.2: repo renamed to WinFlexSetupModern; Gaming profile also covers the former GUI-only tweaks.
 
 Usage examples:
   .\HardwareAuditAndPrivacy.ps1                        # interactive menu
@@ -27,8 +28,8 @@ param(
     [string]$ReportDir = ''       # where to save the HTML report (default: Desktop)
 )
 
-$script:WFVersion = '6.1'
-$script:RawBase   = 'https://raw.githubusercontent.com/dor2500/WinFlexOS-Optimizer/master'
+$script:WFVersion = '6.2'
+$script:RawBase   = 'https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master'
 
 # ==============================================================================
 # 0. Administrator Privileges Check (+ relaunch under Windows PowerShell 5.1)
@@ -2141,6 +2142,20 @@ function Invoke-ProfileGaming {
     # Zero Menu Delay
     Set-WFReg -Path "HKCU:\Control Panel\Desktop" -Name "MenuShowDelay" -Value "0" -Type String -Desc "Zero Menu Show Delay (Instant UI)" -Category "System UI"
     Set-WFReg -Path "HKCU:\Control Panel\Desktop" -Name "AutoEndTasks" -Value "1" -Type String -Desc "Auto End Hung Tasks" -Category "System UI"
+    Set-WFReg -Path "HKCU:\Control Panel\Desktop" -Name "WaitToKillAppTimeout" -Value "2000" -Type String -Desc "Close apps faster at shutdown (2s)" -Category "System UI"
+    Set-WFReg -Path "HKCU:\Control Panel\Desktop" -Name "HungAppTimeout" -Value "1000" -Type String -Desc "Detect hung apps faster (1s)" -Category "System UI"
+    Set-WFReg -Path "HKLM:\SYSTEM\CurrentControlSet\Control" -Name "WaitToKillServiceTimeout" -Value "2000" -Type String -Desc "Stop services faster at shutdown (2s)" -Category "System UI"
+
+    # Receive Segment Coalescing off (lower latency at a small throughput cost)
+    Set-WFNetshTcp -Setting "rsc" -Value "disabled" -Desc "Disable Receive Segment Coalescing" -Category "Network"
+
+    # Budget PCs (<= 8 GB RAM or <= 4 cores): trim visual effects to free CPU/RAM for the game
+    $cores = if ($script:cpu.NumberOfCores) { [int]$script:cpu.NumberOfCores } else { 4 }
+    $ramGb = if ($script:totalRamGB) { [double]$script:totalRamGB } else { 8 }
+    if ($ramGb -le 8 -or $cores -le 4) {
+        Set-WFReg -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" -Name "VisualFXSetting" -Value 2 -Type DWord -Desc "Visual effects: best performance (budget PC detected)" -Category "System UI"
+        Set-WFReg -Path "HKCU:\Control Panel\Desktop\WindowMetrics" -Name "MinAnimate" -Value "0" -Type String -Desc "Disable minimize/maximize animation (budget PC detected)" -Category "System UI"
+    }
 
     # Power Scheme & Core Unparking
     if (-not $script:IsLaptop) {
@@ -2161,7 +2176,7 @@ function Invoke-ProfileGaming {
             Disable-WFService -Name $_ -Desc "Disable ASUS GameFirst network latency killer" -Category "Network"
         }
         # 2. Stop Telemetry
-        @("AsusROGLSLService", "ASUSSoftwareManager", "ASUSLinkNear", "ASUSLinkRemote", "AsusAppService", "AsusCertService") | ForEach-Object {
+        @("AsusROGLSLService", "ASUSSoftwareManager", "ASUSLinkNear", "ASUSLinkRemote", "AsusAppService", "AsusCertService", "AsusPTPCenter") | ForEach-Object {
             Disable-WFService -Name $_ -Desc "Disable ASUS background telemetry & ad polling" -Category "Telemetry"
         }
         # 3. Tame LightingService
