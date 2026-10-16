@@ -13,25 +13,17 @@
 irm https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master/WinFlexSetupModern.ps1 | iex
 ```
 
-The app downloads its companion files (`menu.ps1`, `HardwareAuditAndPrivacy.ps1`) automatically.
+Everything is in this one file — the app, its menu and the optimization engine. If PowerShell is not running as Administrator, the app asks for elevation by itself.
 
-Prefer the console engine only (no GUI)?
+You can also download `WinFlexSetupModern.ps1` from the [latest release](https://github.com/dor2500/WinFlexSetupModern/releases/latest) and run it directly.
+
+### Advanced (console, no GUI)
 
 ```powershell
-irm https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master/HardwareAuditAndPrivacy.ps1 | iex
+.\WinFlexSetupModern.ps1 -Console                 # profile menu in the console
+.\WinFlexSetupModern.ps1 -ProfileId 1,8,12        # run profiles directly
+.\WinFlexSetupModern.ps1 -ProfileId 7 -DryRun     # preview only - changes nothing, still writes the report
 ```
-
-You can also download the files from the [latest release](https://github.com/dor2500/WinFlexSetupModern/releases/latest), keep them in one folder and run `WinFlexSetupModern.ps1`.
-
----
-
-## 📁 Files
-
-| File | Purpose |
-|------|---------|
-| `WinFlexSetupModern.ps1` | The main app (GUI): hardware overview, app installer, tweaks and profiles. |
-| `menu.ps1` | The app's menu: categories, apps and tweak entries. |
-| `HardwareAuditAndPrivacy.ps1` | The optimization engine: profiles 1–13, restore point, HTML report, crash-safe UNDO. Can also run on its own. |
 
 ---
 
@@ -61,5 +53,5 @@ Every run creates an interactive HTML report on the Desktop listing each service
 ## ⚠️ Disclaimer & Safety
 * **Restore Point**: A System Restore Point is created before any change. If it cannot be created, the engine asks before continuing.
 * **UNDO**: Profile 6 restores every recorded change, even from a run that was interrupted.
-* **Open Source**: The code is 100% transparent — read `HardwareAuditAndPrivacy.ps1` to see exactly which registry keys and services are modified.
+* **Open Source**: The code is 100% transparent — read `WinFlexSetupModern.ps1` to see exactly which registry keys and services are modified.
 * **Usage**: Use at your own risk. This tool is intended for advanced users who want to maximize their hardware's potential.
