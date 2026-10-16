@@ -31,7 +31,7 @@ param(
     [string]$ReportDir = ''       # where to save the HTML report (default: Desktop)
 )
 
-$script:WFVersion = '6.4'
+$script:WFVersion = '6.4.1'
 $script:RawBase   = 'https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master'
 
 # ==============================================================================
@@ -2776,33 +2776,26 @@ function Get-WFLastRun {
     return $null
 }
 
-function Write-WFMenuItem {
-    # One menu cell: right-aligned number + name, padded to a fixed column width.
-    param([string]$Id, [int]$Width = 34, [string]$Color = 'White')
-    if (-not $Id) { Write-WFRaw (' ' * $Width) -NoNewLine; return }
-    $name = $script:WFProfileTitles[$Id]
-    Write-WFRaw ('    {0,2}  ' -f $Id) 'Yellow' -NoNewLine
-    Write-WFRaw ($name.PadRight($Width - 8)) $Color -NoNewLine
-}
-
 function Show-WFMenu {
-    Write-WFBanner "Choose a profile"
-    $groups = @(
-        @{ Left = 'PERFORMANCE'; L = @('1', '2', '3', '4'); Right = 'PRIVACY & DEBLOAT'; R = @('7', '8', '11', '13') },
-        @{ Left = 'MAINTENANCE'; L = @('9', '10', '12'); Right = 'TOOLS'; R = @('5', '6') }
-    )
-    foreach ($g in $groups) {
-        Write-WFRaw ('    {0,-34}' -f $g.Left) 'DarkCyan' -NoNewLine
-        Write-WFRaw $g.Right 'DarkCyan'
-        $rows = [math]::Max($g.L.Count, $g.R.Count)
-        for ($i = 0; $i -lt $rows; $i++) {
-            Write-WFMenuItem $(if ($i -lt $g.L.Count) { $g.L[$i] } else { '' })
-            $rid = if ($i -lt $g.R.Count) { $g.R[$i] } else { '' }
-            Write-WFMenuItem $rid -Color $(if ($rid -eq '11') { 'Red' } else { 'White' })
-            Write-WFRaw '' -ScreenOnly
-        }
-        Write-WFRaw ''
-    }
+    Write-WFBanner "Phase 2: Define Usage Profile (Customization & Debloat)" 'Magenta'
+    Write-WFRaw "Select optimization profile (Enter a number 1-13 or comma-separated list like 1,8,12):`n" 'Cyan'
+
+    Write-WFRaw " [1]   Gaming - Max performance, zero mouse accel, lower network latency."
+    Write-WFRaw " [2]   Office & Browsing - Stability, power saving, bloatware removal."
+    Write-WFRaw " [3]   Content Creation - Maximize stable resources for rendering/production."
+    Write-WFRaw " [4]   AI & Machine Learning - Deep system scan, max RAM/VRAM utilization, Long Paths."
+    Write-WFRaw " [5]   Forensic Deep Scan - Full driver & folder analysis (~5-10 min)."
+    Write-WFRaw " [6]   UNDO - Restore system settings to recorded state or Windows defaults."
+    Write-WFRaw " [7]   Ultimate Debloat - Standard telemetry and consumer bloat purge."
+    Write-WFRaw " [8]   Privacy Shield - Hosts block, telemetry levels, typing tracking block."
+    Write-WFRaw " [9]   Laptop Battery Saver - Aggressive processor and display power savings."
+    Write-WFRaw " [10]  Network Supercharger - TCP/IP stack tune, DNS cache flush, heuristics off."
+    Write-WFRaw " [11]  Ultra-Deep Nuclear Debloat - Extreme stripping (Edge, Copilot, Widgets, background tasks)." 'Red'
+    Write-WFRaw " [12]  Deep System Cleanup - Temp, Windows Update cache, crash dumps, SSD TRIM." 'Yellow'
+    Write-WFRaw " [13]  Security Hardening - Disable WPAD, remote assistance, lock screen privacy." 'Green'
+    Write-WFRaw ""
+    Write-WFRaw " [Q]   Quit" 'DarkGray'
+    Write-WFRaw ""
     $last = Get-WFLastRun
     if ($last) {
         Write-WFRaw ('    Last run: {0:dd/MM/yyyy HH:mm}  ({1})  - undo with 6' -f $last.When, $last.Profiles) 'DarkGray'
@@ -2811,7 +2804,7 @@ function Show-WFMenu {
     $choice = ""
     while ($choice -notmatch '^\s*(([1-9]|1[0-3])(\s*,\s*([1-9]|1[0-3]))*|[Qq])\s*$') {
         if ($choice) { Write-WFRaw "    '$choice' is not a valid choice." 'Yellow' }
-        $choice = Read-Host "  Type a number, several like 1,8,12 - or Q to quit"
+        $choice = Read-Host "Enter your choice (1-13, several like 1,8,12, or Q)"
     }
     return $choice.Trim()
 }
