@@ -1,4 +1,4 @@
-$script:Categories = @(
+﻿$script:Categories = @(
     [pscustomobject]@{
         TitleEn = "System Tweaks & AI"
         TitleHe = "אופטימיזציה ופיתוח"
@@ -14,7 +14,8 @@ $script:Categories = @(
             [pscustomobject]@{ Name = "Disable Windows Copilot"; TweakId = "DisableCopilot"; IsTweak = $true }
             [pscustomobject]@{ Name = "Extreme Gamer Debloat"; TweakId = "ExtremeDebloat"; IsTweak = $true }
             [pscustomobject]@{ Name = "Forensic Deep Scan"; TweakId = "ForensicScan"; IsTweak = $true }
-            [pscustomobject]@{ Name = "Gaming Profile (Max Perf, Low Ping)"; TweakId = "ProfileGaming"; IsTweak = $true }
+            [pscustomobject]@{ Name = "Gaming Profile (100000% Perf, Low Ping, ASUS Armoury Crate Tuner)"; TweakId = "ProfileGaming"; IsTweak = $true }
+            [pscustomobject]@{ Name = "ASUS Armoury Crate & ROG Stutter Fix"; TweakId = "AsusGamingFix"; IsTweak = $true }
             [pscustomobject]@{ Name = "Generate HTML Report (Desktop)"; TweakId = "GenerateHtmlReport"; IsTweak = $true }
             [pscustomobject]@{ Name = "Nuclear System Debloat (Extreme)"; TweakId = "NuclearDebloat"; IsTweak = $true }
             [pscustomobject]@{ Name = "Office Profile (Battery & Stable)"; TweakId = "ProfileOffice"; IsTweak = $true }
