@@ -31,7 +31,7 @@ param(
     [string]$ReportDir = ''       # where to save the HTML report (default: Desktop)
 )
 
-$script:WFVersion = '6.4.2'
+$script:WFVersion = '6.5'
 $script:RawBase   = 'https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master'
 
 # ==============================================================================
@@ -115,6 +115,7 @@ function New-WFSession {
         RestoreDone = $false
         HostsBackedUp = $false
         BaseDone = $false
+        CleanupDone = $false
         IsUndo = $false
         RunStamp = (Get-Date -Format 'yyyyMMdd_HHmmss')
         JournalPath = $null
@@ -2400,7 +2401,43 @@ function Invoke-ProfileBatterySaver {
     Set-WFPowerSetting -Sub "SUB_VIDEO" -Setting "VIDEOIDLE" -AC 900 -DC 180 -Label "Display Timeout (3 min on Battery)" -Category "Power"
 }
 
+function Test-WFRebootPending {
+    return ((Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or
+            (Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'))
+}
+
+function Test-WFUpdateBusy {
+    # Windows Update is installing (TrustedInstaller / TiWorker active) or waiting for a restart.
+    if (Test-WFRebootPending) { return $true }
+    if (Get-Process -Name 'TiWorker' -ErrorAction SilentlyContinue) { return $true }
+    $ti = Get-Service -Name 'TrustedInstaller' -ErrorAction SilentlyContinue
+    return [bool]($ti -and $ti.Status -eq 'Running')
+}
+
+function Get-WFPreflight {
+    # Things worth knowing before changing the system. Returns a list of warning lines.
+    $w = @()
+    if (Test-WFRebootPending) { $w += 'Windows is waiting for a restart (updates). Restarting first is recommended.' }
+    elseif (Test-WFUpdateBusy) { $w += 'Windows Update is installing right now - its download cache will not be cleaned.' }
+    try {
+        $sys = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'" -ErrorAction Stop
+        $freeGb = [math]::Round($sys.FreeSpace / 1GB, 1)
+        if ($freeGb -lt 5) { $w += "Only $freeGb GB free on $env:SystemDrive - the restore point may fail. Profile 12 (cleanup) frees space." }
+    } catch {}
+    try {
+        $bat = Get-CimInstance Win32_Battery -ErrorAction Stop | Select-Object -First 1
+        # BatteryStatus 1 = discharging (running on battery)
+        if ($bat -and $bat.BatteryStatus -eq 1 -and $bat.EstimatedChargeRemaining -lt 30) {
+            $w += "Running on battery at $($bat.EstimatedChargeRemaining)% - plug in the charger before applying changes."
+        }
+    } catch {}
+    return $w
+}
+
 function Invoke-ProfileDeepCleanup {
+    # Nuclear Debloat (11) already includes this - run it once per session (e.g. -ProfileId 11,12).
+    if ($script:WF.CleanupDone) { return }
+    $script:WF.CleanupDone = $true
     [void]$script:WF.ProfileNames.Add("Deep System Cleanup")
     Write-WFPhase "Profile: Deep Disk & Cache Cleanup"
 
@@ -2408,9 +2445,13 @@ function Invoke-ProfileDeepCleanup {
     Clear-WFFolder -Path $env:TEMP -Desc "User Temporary files cache" -Category "Cleanup"
     Clear-WFFolder -Path (Join-Path $env:SystemRoot "Temp") -Desc "Windows System Temporary files" -Category "Cleanup"
 
-    # Windows Update Download Cache
+    # Windows Update Download Cache - never while an update is installing or waiting for a restart
     $wuCache = Join-Path $env:SystemRoot "SoftwareDistribution\Download"
-    Clear-WFFolder -Path $wuCache -Desc "Windows Update installer cache" -Category "Cleanup" -StopServices @("wuauserv", "bits")
+    if (Test-WFUpdateBusy) {
+        Add-WFAction -Category 'Cleanup' -Type 'Files' -Target $wuCache -Action 'Delete files  (Windows Update installer cache)' -Status Skipped -Detail 'Windows Update is installing or waiting for a restart - the cache is kept so the update is not broken. Run cleanup again after restarting.' | Out-Null
+    } else {
+        Clear-WFFolder -Path $wuCache -Desc "Windows Update installer cache" -Category "Cleanup" -StopServices @("wuauserv", "bits")
+    }
 
     # Delivery Optimization Cache
     $doCache = Join-Path $env:SystemRoot "ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache"
@@ -2537,8 +2578,15 @@ function Invoke-ProfileNuclearDebloat {
 }
 
 function Get-WFUndoSource {
-    # Finds the newest real run (not a DRY RUN, not an UNDO run) that recorded undo data.
+    # The newest run that can be undone (see Get-WFUndoSources).
+    return (@(Get-WFUndoSources -Max 1) | Select-Object -First 1)
+}
+
+function Get-WFUndoSources {
+    # Real runs (not DRY RUN, not UNDO) that recorded undo data, newest first, one entry per run.
     # A run that was interrupted only has a journal file - that is used as well.
+    param([int]$Max = 10)
+    $list = @(); $seen = @{}
     $dirs = @((Get-WFStateDir), [Environment]::GetFolderPath('Desktop'))
     if ($ReportDir) { $dirs += $ReportDir }
     $cands = @()
@@ -2549,22 +2597,49 @@ function Get-WFUndoSource {
         })
     }
     foreach ($f in ($cands | Sort-Object LastWriteTime -Descending)) {
+        if ($list.Count -ge $Max) { break }
         try {
             if ($f.Name -like '*.journal.jsonl') {
                 $acts = @(Get-Content -LiteralPath $f.FullName -Encoding UTF8 -ErrorAction Stop | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
                 if ($acts.Count -eq 0) { continue }
                 $stamp = $f.Name -replace '^run-', '' -replace '\.journal\.jsonl$', ''
-                return @{ File = $f.FullName; Date = $f.LastWriteTime.ToString('yyyy-MM-dd HH:mm'); Actions = $acts; RunStamp = $stamp; Interrupted = $true }
+                if ($seen.ContainsKey($stamp)) { continue }
+                $seen[$stamp] = $true
+                $list += @{ File = $f.FullName; Date = $f.LastWriteTime.ToString('yyyy-MM-dd HH:mm'); Actions = $acts; RunStamp = $stamp; Interrupted = $true; Profiles = '(interrupted run)' }
+                continue
             }
             $st = [System.IO.File]::ReadAllText($f.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             if ($st.DryRun -or $st.IsUndo) { continue }
             if (@($st.Profiles) -match 'UNDO') { continue }   # state files written by v6.0
             $acts = @($st.Actions | Where-Object { $_.Undo })
             if ($acts.Count -eq 0) { continue }
-            return @{ File = $f.FullName; Date = $st.Date; Actions = $acts; RunStamp = $st.RunStamp; Interrupted = $false }
+            # The same run is saved twice (ProgramData + next to the report) - list it once.
+            $key = if ($st.RunStamp) { [string]$st.RunStamp } else { $f.FullName }
+            if ($seen.ContainsKey($key)) { continue }
+            $seen[$key] = $true
+            $when = try { ([datetime]$st.Date).ToString('yyyy-MM-dd HH:mm') } catch { [string]$st.Date }
+            $list += @{ File = $f.FullName; Date = $when; Actions = $acts; RunStamp = $st.RunStamp; Interrupted = $false; Profiles = (@($st.Profiles) -join ', ') }
         } catch { continue }
     }
-    return $null
+    return $list
+}
+
+function Select-WFUndoSource {
+    # Interactive: when several runs can be undone, let the user pick one (Enter = newest).
+    $all = @(Get-WFUndoSources -Max 5)
+    if ($all.Count -le 1 -or $Silent -or $Worker) { return ($all | Select-Object -First 1) }
+    Write-WFRaw ''
+    Write-WFRaw '  Runs that can be undone (newest first):' 'Cyan'
+    for ($i = 0; $i -lt $all.Count; $i++) {
+        Write-WFRaw ('    [{0}] {1}  {2}  ({3} changes)' -f ($i + 1), $all[$i].Date, $all[$i].Profiles, @($all[$i].Actions).Count) $(if ($i -eq 0) { 'White' } else { 'Gray' })
+    }
+    Write-WFRaw '    Tip: undo the newest run first - restoring an older run alone can mix settings.' 'DarkGray'
+    while ($true) {
+        $a = Read-Host ("  Which run to undo? (1-{0}) [Default: 1]" -f $all.Count)
+        if (-not $a) { return $all[0] }
+        $n = 0
+        if ([int]::TryParse($a.Trim(), [ref]$n) -and $n -ge 1 -and $n -le $all.Count) { return $all[$n - 1] }
+    }
 }
 
 function Complete-WFUndoSource {
@@ -2722,7 +2797,7 @@ function Invoke-ProfileUndo {
     $script:WF.IsUndo = $true
     Write-WFBanner "Phase: Reverting Changes from Saved State / Windows Defaults" 'Yellow'
 
-    $src = Get-WFUndoSource
+    $src = Select-WFUndoSource
     if ($src) {
         Write-WFRaw "[+] Restoring from: $($src.File)" 'Green'
         if ($src.Interrupted) { Write-WFNote "That run was interrupted - restoring from its live journal." 'Yellow' }
@@ -2863,6 +2938,11 @@ function Confirm-WFProfiles {
     }
     if ($Profiles -contains '13') { Write-WFRaw '    Security Hardening turns off Windows Remote Assistance only - RDP, AnyDesk, TeamViewer etc. keep working.' 'DarkGray' }
     Write-WFRaw '    A System Restore Point is created first. Everything can be undone with 6.' 'DarkGray'
+    $pre = @(Get-WFPreflight)
+    if ($pre.Count) {
+        Write-WFRaw ''
+        foreach ($p in $pre) { Write-WFRaw ('    ! ' + $p) 'Yellow' }
+    }
     Write-WFRaw ''
     while ($true) {
         Write-WFRaw '  [Y] Run   ' 'Green' -NoNewLine
@@ -2922,6 +3002,12 @@ function Start-WFOptimization {
 
     Open-WFLog
     $script:WF.SnapBefore = Get-WFSnapshot
+    # Pre-checks go into the report too (the menu already showed them on screen).
+    foreach ($p in @(Get-WFPreflight)) {
+        $wasQuiet = $script:WF.Quiet; $script:WF.Quiet = $true
+        Add-WFAction -Category 'Pre-check' -Type 'System' -Target 'Before the run' -Action $p -Status Info | Out-Null
+        $script:WF.Quiet = $wasQuiet
+    }
 
     $isUndoOnly = ($SelectedProfiles | Where-Object { $_ -ne '6' }).Count -eq 0
     $modifies = @($SelectedProfiles | Where-Object { $_ -ne '5' }).Count -gt 0
@@ -3035,6 +3121,19 @@ if (-not $LibraryOnly) {
         Write-WFRaw ''
         Write-WFRaw "  [!] Preview without Administrator rights: apps, features and some services cannot be read," 'Yellow'
         Write-WFRaw "      so the report may list them as 'Not here'. Run as Administrator for an accurate preview." 'Yellow'
+    }
+
+    # Downloaded copies can get old - tell the user when GitHub has a newer version ('irm | iex' is always current).
+    if ($PSCommandPath -and -not $Worker -and -not $Silent) {
+        try {
+            $latest = (Invoke-WebRequest -Uri "$($script:RawBase)/WinFlexSetupModern.ps1" -UseBasicParsing -TimeoutSec 4 -ErrorAction Stop).Content
+            $m = [regex]::Match([string]$latest, "WFVersion = '([\d.]+)'")
+            if ($m.Success -and ([version]$m.Groups[1].Value -gt [version]$script:WFVersion)) {
+                Write-WFRaw ''
+                Write-WFRaw "  [i] A newer version is available: v$($m.Groups[1].Value) (you have v$($script:WFVersion)). Get it with:" 'Yellow'
+                Write-WFRaw "      irm $($script:RawBase)/WinFlexSetupModern.ps1 | iex" 'White'
+            }
+        } catch {}
     }
 
     Get-SystemHardwareAudit
