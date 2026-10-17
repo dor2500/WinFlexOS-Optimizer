@@ -31,7 +31,7 @@ param(
     [string]$ReportDir = ''       # where to save the HTML report (default: Desktop)
 )
 
-$script:WFVersion = '6.5'
+$script:WFVersion = '6.5.1'
 $script:RawBase   = 'https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master'
 
 # ==============================================================================
@@ -2019,6 +2019,11 @@ function Invoke-ForensicDeepScan {
     }
 
     $job = Start-Job -ScriptBlock $jobScript
+    # The scan walks every file and registry key - run it at low priority so it does not heat up the CPU.
+    Start-Sleep -Milliseconds 500
+    foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $PID" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(powershell|pwsh)\.exe$' })) {
+        try { (Get-Process -Id $child.ProcessId -ErrorAction Stop).PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch {}
+    }
     $spinner = @('|', '/', '-', '\')
     $c = 0
     while ($job.State -eq 'Running') {
@@ -2188,8 +2193,10 @@ function Invoke-ProfileGaming {
     # Quantum Boost for Foreground Applications (Win32PrioritySeparation 0x26)
     Set-WFReg -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value 38 -Type DWord -Desc "Foreground Quantum Boost (0x26 - Snappy Responsiveness)" -Category "Kernel"
 
-    # Disable Power Throttling
-    Set-WFReg -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" -Name "PowerThrottlingOff" -Value 1 -Type DWord -Desc "Disable CPU Power Throttling on games" -Category "Power"
+    # Power Throttling stays ON: it only slows background apps (never the game in front), and turning it
+    # off made background tasks run at full power - more heat and fan noise. Earlier versions turned it
+    # off; this puts the Windows default back.
+    Remove-WFRegValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" -Name "PowerThrottlingOff" -Desc "Keep Windows Power Throttling for background apps (less heat)" -Category "Power"
 
     # Keep Kernel and Drivers resident in RAM (Disable Paging Executive)
     Set-WFReg -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "DisablePagingExecutive" -Value 1 -Type DWord -Desc "Keep Kernel & Drivers in RAM (Zero Paging Lag)" -Category "Memory"
@@ -2210,7 +2217,9 @@ function Invoke-ProfileGaming {
 
     # DPC Latency (HPET & Dynamic Tick)
     Remove-WFBcd -Name "useplatformclock" -Desc "Disable synthetic HPET (use CPU invariant TSC)" -Category "Boot / Latency"
-    Set-WFBcd -Name "disabledynamictick" -Value "yes" -Desc "Disable dynamic tick for low micro-stutter" -Category "Boot / Latency"
+    # Dynamic tick stays ON: disabling it keeps the CPU from deep sleep when idle (heat, fans) for a
+    # barely measurable latency gain. Earlier versions disabled it; this restores the Windows default.
+    Remove-WFBcd -Name "disabledynamictick" -Desc "Keep dynamic tick (CPU can sleep when idle - less heat)" -Category "Boot / Latency"
 
     # Hardware-Accelerated GPU Scheduling (HAGS)
     Set-WFReg -Path "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -Value 2 -Type DWord -Desc "Enable Hardware-Accelerated GPU Scheduling" -Category "GPU"
@@ -2238,12 +2247,9 @@ function Invoke-ProfileGaming {
         Set-WFReg -Path "HKCU:\Control Panel\Desktop\WindowMetrics" -Name "MinAnimate" -Value "0" -Type String -Desc "Disable minimize/maximize animation (budget PC detected)" -Category "System UI"
     }
 
-    # Power Scheme & Core Unparking
+    # Power: full boost under load, but the CPU may still clock down when idle (see Set-WFCoolPerformancePlan)
     if (-not $script:IsLaptop) {
-        $uGuid = Get-WFUltimateGuid
-        if ($uGuid) {
-            Set-WFPowerPlan -Guid $uGuid -Name "Ultimate Performance" -Desc "Unpark all CPU cores & disable sleep states" -Category "Power" | Out-Null
-        }
+        Set-WFCoolPerformancePlan -Desc "High Performance plan for games"
     }
 
     # ASUS Hardware & Armoury Crate Deep Taming (Auto-applied if ASUS detected)
@@ -2288,6 +2294,20 @@ function Invoke-ProfileOffice {
     Set-WFPowerPlan -Guid "381b4222-f694-41f0-9685-ff5bb260df2e" -Name "Balanced" -Desc "Enable Balanced Power Plan" -Category "Power" | Out-Null
 }
 
+function Set-WFCoolPerformancePlan {
+    # High Performance for full boost under load, with the minimum processor state at 5% so the CPU
+    # clocks down when idle. (Ultimate Performance / stock High Performance keep it at 100% all the
+    # time - constant heat and loud fans for no real gain in games or exports.)
+    param([string]$Desc = 'High Performance plan')
+    $hp = '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c'
+    if ((Get-WFPowerSchemeGuids) -contains $hp) {
+        Set-WFPowerPlan -Guid $hp -Name "High Performance" -Desc $Desc -Category "Power" | Out-Null
+    } else {
+        Add-WFAction -Category 'Power' -Type 'Power' -Target 'Power plan' -Action $Desc -Status NotFound -Detail 'This PC does not offer the High Performance plan (Modern Standby) - kept the current plan.' | Out-Null
+    }
+    Set-WFPowerSetting -Sub 'SUB_PROCESSOR' -Setting 'PROCTHROTTLEMIN' -AC 5 -DC 5 -Label "Minimum processor state 5% (cools down when idle)" -Category "Power"
+}
+
 function Invoke-ProfileCreator {
     [void]$script:WF.ProfileNames.Add("Content Creation")
     Write-WFPhase "Profile: Content Creation (Stable Rendering & Export Pipelines)"
@@ -2296,11 +2316,7 @@ function Invoke-ProfileCreator {
     Set-WFReg -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 20 -Type DWord -Desc "Stable System Responsiveness (20%) for background rendering" -Category "Media"
 
     if (-not $script:IsLaptop) {
-        if ((Get-WFPowerSchemeGuids) -contains '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c') {
-            Set-WFPowerPlan -Guid "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c" -Name "High Performance" -Desc "High Performance Power Plan for faster exports" -Category "Power" | Out-Null
-        } else {
-            Add-WFAction -Category 'Power' -Type 'Power' -Target 'Power plan' -Action 'Activate High Performance power plan' -Status NotFound -Detail 'This PC does not offer the High Performance plan (Modern Standby) - kept the current plan.' | Out-Null
-        }
+        Set-WFCoolPerformancePlan -Desc "High Performance plan for faster exports"
     }
 }
 
@@ -2312,10 +2328,7 @@ function Invoke-ProfileAI {
     Set-WFReg -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 10 -Type DWord -Desc "System Responsiveness 10% for inference tasks" -Category "Compute"
 
     if (-not $script:IsLaptop) {
-        $uGuid = Get-WFUltimateGuid
-        if ($uGuid) {
-            Set-WFPowerPlan -Guid $uGuid -Name "Ultimate Performance" -Desc "Ultimate Performance power scheme for sustained tensor compute" -Category "Power" | Out-Null
-        }
+        Set-WFCoolPerformancePlan -Desc "High Performance plan for sustained compute"
     }
     Invoke-DeepAIScan
 }
@@ -2856,7 +2869,7 @@ $script:WFProfileTitles = @{
     '12' = 'Deep System Cleanup'; '13' = 'Security Hardening'
 }
 $script:WFProfileDesc = @{
-    '1' = 'Ultimate plan, raw mouse input, low-latency network, HAGS'
+    '1' = 'Performance plan, raw mouse input, low-latency network, HAGS'
     '2' = 'Balanced power plan, Game Mode off'
     '3' = 'High Performance plan, stable background rendering'
     '4' = 'Long paths, compute priority, AI toolchain scan'

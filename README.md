@@ -45,7 +45,7 @@ Before any changes are made, the app performs a deep scan of your system, includ
 - Storage media types (NVMe / SSD).
 
 ### 2. 🎯 Usage Profiles
-* **🎮 Gaming**: Ultimate Performance plan, zero mouse acceleration, lower network latency (Nagle off, TCP heuristics off), HPET/dynamic tick tuning, HAGS, Game Mode, and ASUS Armoury Crate taming when ASUS hardware is detected.
+* **🎮 Gaming**: High Performance plan that still cools down when idle, zero mouse acceleration, lower network latency (Nagle off, TCP heuristics off), HPET off, HAGS, Game Mode, and ASUS Armoury Crate taming when ASUS hardware is detected. Since v6.5.1 it no longer keeps the CPU at full clock when idle (no more extra heat or loud fans) and it restores Windows defaults that older versions changed for the worse.
 * **🌐 Office & Browsing**: Stability and the Balanced power plan.
 * **🎬 Content Creation**: Stable `SystemResponsiveness` and High Performance power plan for faster exports.
 * **🤖 AI & Machine Learning**: Long paths, compute-friendly settings and an AI toolchain/GPU scan.
