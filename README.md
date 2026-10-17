@@ -35,14 +35,14 @@ You can also download `WinFlexSetupModern.ps1` from the [latest release](https:/
 
 ## 🛠️ Features
 
-### 1. 🔍 Comprehensive Hardware Audit
-Before any changes are made, the app performs a deep scan of your system, including:
-- Form factor and OS build version.
-- Motherboard model and BIOS version.
-- Exact CPU specifications (Cores/Threads and Base Clock).
-- Detailed RAM topology (Capacity, Speed, and Manufacturer per stick).
-- GPU VRAM and driver version.
-- Storage media types (NVMe / SSD).
+### 1. 🔍 Full System Scan
+Before any changes are made, the script scans the whole system in a few seconds:
+- **Hardware**: PC model and form factor, CPU, RAM (type, speed, number of sticks), GPU (discrete or integrated, driver age), disks and their health, monitor refresh rate (current vs. supported), network (wired or Wi-Fi) and ping.
+- **Installed software**: every installed program, grouped into game launchers, anti-cheat, streaming & voice, RGB & peripheral software, virtualization (Hyper-V, WSL, Docker), creative and developer tools, and remote-access tools.
+- **Windows state**: build, Memory Integrity, free space on the system drive, and the apps that start with Windows.
+
+### 1b. 🧠 Profiles That Adapt To Your PC
+The profiles use the scan: for example, Gaming enables GPU hardware scheduling only on a discrete GPU, changes nothing that could clash with anti-cheat, and keeps Xbox, virtualization and remote-access services working. At the end you get **personal recommendations** for things a script should not change on its own — e.g. a monitor running at 60 Hz that supports 144 Hz, RAM without XMP/EXPO, a single RAM stick, an old graphics driver, Wi-Fi instead of a cable, too many launchers starting with Windows, or a nearly full system drive.
 
 ### 2. 🎯 Usage Profiles
 * **🎮 Gaming**: High Performance plan that still cools down when idle, zero mouse acceleration, lower network latency (Nagle off, TCP heuristics off), HPET off, HAGS, Game Mode, and ASUS Armoury Crate taming when ASUS hardware is detected. Since v6.5.1 it no longer keeps the CPU at full clock when idle (no more extra heat or loud fans) and it restores Windows defaults that older versions changed for the worse.
