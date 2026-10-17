@@ -31,7 +31,7 @@ param(
     [string]$ReportDir = ''       # where to save the HTML report (default: Desktop)
 )
 
-$script:WFVersion = '6.6'
+$script:WFVersion = '6.6.1'
 $script:RawBase   = 'https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master'
 
 # ==============================================================================
@@ -269,6 +269,14 @@ function Write-WFLive {
     # "Already OK" / "Not present" only with -Detailed (they are always in the report).
     if ($r.Status -in @('Already', 'NotFound') -and -not $Detailed) { return }
     if ($r.Category -eq 'Audit') { return }
+    # The same change on many items (e.g. one TCP setting on 15 network adapters) is printed once;
+    # the step summary says how many more there were (every item is still in the report and the log).
+    if ($r.Status -eq 'Changed' -and -not $Detailed) {
+        if ($null -eq $script:WFSeenInPhase) { $script:WFSeenInPhase = @{} }
+        $k = [string]$r.Action
+        if ($script:WFSeenInPhase.ContainsKey($k)) { $script:WFRepeatsInPhase++; return }
+        $script:WFSeenInPhase[$k] = $true
+    }
     $mark = switch ($r.Status) {
         'Changed'  { if ($r.Sim) { '~' } else { '+' } }
         'Already'  { '=' }
@@ -303,6 +311,7 @@ function Write-WFPhase {
     $script:WF.StepNo++
     $script:WF.Phase = $Title
     $script:WF.PhaseStart = $script:WF.Actions.Count
+    $script:WFSeenInPhase = @{}; $script:WFRepeatsInPhase = 0
     Write-WFRaw ""
     Write-WFRaw ('  [{0,2}] ' -f $script:WF.StepNo) 'DarkCyan' -NoNewLine
     Write-WFRaw $Title 'Cyan' -NoNewLine
@@ -318,6 +327,10 @@ function Close-WFPhase {
     $n = @($slice | Where-Object Status -eq 'NotFound').Count
     $f = @($slice | Where-Object Status -eq 'Failed').Count
     $verb = if ($script:WF.DryRun) { 'would change' } else { 'changed' }
+    if ($script:WFRepeatsInPhase -gt 0) {
+        Write-WFRaw ("      + {0} more of the same on other adapters / items (listed in the report)" -f $script:WFRepeatsInPhase) 'DarkGray'
+        $script:WFRepeatsInPhase = 0
+    }
     Write-WFRaw ("         {0} {1} | {2} already OK | {3} not present | " -f $c, $verb, $a, $n) 'DarkGray' -NoNewLine
     Write-WFRaw ("{0} failed" -f $f) $(if ($f -gt 0) { 'Red' } else { 'DarkGray' }) -NoNewLine
     Write-WFRaw '' -ScreenOnly
@@ -2328,7 +2341,12 @@ function Invoke-BaseDebloat {
     # (WaaSMedicSvc is intentionally NOT touched: it is protected and keeps Windows Update able to repair itself.)
     Disable-WFService -Name "DiagTrack" -Desc "Connected User Experiences and Telemetry" -Category "Telemetry"
     # dmwappushservice also delivers MDM (Intune / work-school) remote management - keep it on managed PCs.
-    $mdm = @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Enrollments' -ErrorAction SilentlyContinue | Where-Object { (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).ProviderID })
+    # Every Windows 11 PC has built-in "Local/Cloud/Deploy Authority" entries - only a real MDM enrollment
+    # (Intune "MS DM Server", or any enrollment with a management server URL) counts as managed.
+    $mdm = @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Enrollments' -ErrorAction SilentlyContinue | Where-Object {
+        $e = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+        ($e.ProviderID -eq 'MS DM Server') -or ([string]$e.DiscoveryServiceFullURL -match '^https?://')
+    })
     if ($mdm.Count) {
         Add-WFAction -Category 'Telemetry' -Type 'Service' -Target 'dmwappushservice' -Action 'Disable service  (Device Management WAP Push)' -Status Skipped -Detail 'This PC is managed by an organization (MDM) - the service is needed for remote management.' | Out-Null
     } else {

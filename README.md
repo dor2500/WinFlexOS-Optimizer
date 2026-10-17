@@ -2,6 +2,8 @@
 
 **WinFlexSetupModern** is a Windows optimization & setup tool written in PowerShell. It scans your PC's hardware and applies targeted optimizations based on your usage profile — with a System Restore Point, a full HTML report of every change, and one-click UNDO.
 
+![WinFlexSetupModern - system scan and profile menu](images/screenshot-menu.png)
+
 ---
 
 ## ⚡ Quick Start
@@ -30,6 +32,14 @@ You can also download `WinFlexSetupModern.ps1` from the [latest release](https:/
 .\WinFlexSetupModern.ps1 -ProfileId 7 -DryRun     # preview only - changes nothing, still writes the report
 .\WinFlexSetupModern.ps1 -Detailed                # also print items that were already OK / not present
 ```
+
+---
+
+## 📸 What a run looks like
+
+Choosing **1 (Gaming)** and then **P (Preview)**: you see exactly what would change, a summary, and recommendations for your PC — nothing is touched until you say yes.
+
+![WinFlexSetupModern - preview of the Gaming profile with summary and recommendations](images/screenshot-run.png)
 
 ---
 
