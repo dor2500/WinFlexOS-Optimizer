@@ -31,7 +31,7 @@ param(
     [string]$ReportDir = ''       # where to save the HTML report (default: Desktop)
 )
 
-$script:WFVersion = '6.5.1'
+$script:WFVersion = '6.6'
 $script:RawBase   = 'https://raw.githubusercontent.com/dor2500/WinFlexSetupModern/master'
 
 # ==============================================================================
@@ -517,7 +517,7 @@ function Get-WFRemoteAccessTools {
         if ($s.Name -match $script:WFRemoteAccessPattern -or $s.DisplayName -match $script:WFRemoteAccessPattern) { $found += $s.DisplayName }
     }
     try { if ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -ErrorAction Stop).fDenyTSConnections -eq 0) { $found += 'Remote Desktop (RDP)' } } catch {}
-    return @($found | Where-Object { $_ -notmatch '^Remote Desktop (Services|Configuration)' } | Select-Object -Unique)
+    return @($found | Where-Object { $_ -notmatch '^Remote Desktop (Services|Configuration)' -and $_ -notmatch '(?i)hyper-v' } | Select-Object -Unique)
 }
 
 function Disable-WFService {
@@ -1946,7 +1946,207 @@ function Get-SystemHardwareAudit {
     $netTxt += if ($null -ne $ms) { "  | internet ping $ms ms" } else { '  | no internet reply' }
     Write-WFKeyValue 'Network' $netTxt $(if ($null -ne $ms) { 'White' } else { 'Yellow' })
 
+    # Full system scan: hardware details, every installed program, Windows state.
+    Write-WFRaw '    Scanning programs and Windows settings...' 'DarkGray' -NoNewLine
+    $script:WFInv = Get-WFSystemInventory
+    Write-WFRaw ("`r" + (' ' * 50) + "`r") -ScreenOnly -NoNewLine
+    Show-WFInventory
+
     Add-WFAction -Category 'Audit' -Type 'System' -Target 'Hardware Specification' -Action "Audited: $($script:cpu.Name), $($script:totalRamGB)GB RAM, $gpuDesc" -Status Info | Out-Null
+}
+
+# ==============================================================================
+# 1b. Full system inventory - hardware, installed programs and Windows state.
+#     Profiles read it to adapt (e.g. HAGS only with a capable GPU), and the end
+#     summary turns it into personal recommendations for things a script should
+#     not change on its own (BIOS, monitor, drivers, cables, startup apps).
+#     Kept outside $script:WF so it survives the fresh session after a preview.
+# ==============================================================================
+$script:WFInv = $null
+
+$script:WFSoftwareCatalog = [ordered]@{
+    'Game launchers'    = '(?i)^(steam|epic games launcher|battle\.net|ea app|ea desktop|origin|ubisoft connect|gog galaxy|riot client|rockstar games launcher|minecraft launcher|playnite|amazon games|itch)'
+    'Anti-cheat'        = '(?i)riot vanguard|easy ?anti-?cheat|battleye|faceit'
+    'Streaming & voice' = '(?i)^(obs studio|streamlabs|discord|nvidia app|nvidia geforce experience|geforce experience|amd software|xsplit|twitch studio|medal|overwolf)'
+    'RGB & peripherals' = '(?i)armoury crate|icue|razer synapse|logitech g hub|steelseries gg|msi center|nzxt cam|signalrgb|openrgb|wallpaper engine'
+    'Virtualization'    = '(?i)^(docker desktop|vmware workstation|vmware player|oracle vm virtualbox|bluestacks|ldplayer)'
+    'Creative'          = '(?i)adobe (premiere|photoshop|after effects|lightroom|illustrator)|davinci resolve|^blender|capcut|vegas pro|fl studio|ableton'
+    'Development'       = '(?i)^(microsoft visual studio|visual studio code|python \d|git$|node\.js|jetbrains|android studio|ollama|lm studio)'
+}
+
+function Get-WFInstalledApps {
+    # Every program registered for uninstall (machine 64/32-bit + current user).
+    $names = @()
+    foreach ($k in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                     'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                     'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*')) {
+        $names += @(Get-ItemProperty -Path $k -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -and $_.SystemComponent -ne 1 -and -not $_.ParentKeyName } |
+            ForEach-Object { ([string]$_.DisplayName).Trim() })
+    }
+    return @($names | Sort-Object -Unique)
+}
+
+function Get-WFSystemInventory {
+    $inv = [ordered]@{}
+
+    # --- graphics (virtual / remote display adapters are ignored)
+    $vc = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notmatch '(?i)basic display|remote|virtual|parsec|meta virtual|dummy|indirect' })
+    $gpus = @(foreach ($g in $vc) {
+        $n = [string]$g.Name
+        $vendor = if ($n -match '(?i)nvidia') { 'NVIDIA' } elseif ($n -match '(?i)amd|radeon') { 'AMD' } elseif ($n -match '(?i)intel') { 'Intel' } else { 'Other' }
+        $age = $null
+        try { if ($g.DriverDate) { $age = [int]((Get-Date) - [datetime]$g.DriverDate).TotalDays } } catch {}
+        [pscustomobject]@{
+            Name = $n; Vendor = $vendor
+            Discrete = ($vendor -eq 'NVIDIA') -or ($n -match '(?i)radeon.*(rx|pro)') -or ($n -match '(?i)intel.*arc')
+            DriverAgeDays = $age
+            Refresh = [int]$g.CurrentRefreshRate
+            Width = [int]$g.CurrentHorizontalResolution
+        }
+    })
+    $inv.Gpus = $gpus
+    $inv.HasDiscreteGpu = [bool](@($gpus | Where-Object { $_.Discrete }).Count)
+
+    # --- display: current refresh rate vs. the highest the monitor offers at this resolution
+    $inv.RefreshNow = [int](@($gpus | Where-Object { $_.Refresh -gt 1 } | Measure-Object -Property Refresh -Maximum).Maximum)
+    $inv.RefreshMax = 0
+    try {
+        $w = (@($gpus | Where-Object { $_.Width -gt 0 }) | Select-Object -First 1).Width
+        foreach ($m in @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorListedSupportedSourceModes -ErrorAction Stop)) {
+            foreach ($mode in @($m.MonitorSourceModes)) {
+                if ($w -and $mode.HorizontalActivePixels -ne $w) { continue }
+                if ($mode.VerticalRefreshRateDenominator -gt 0) {
+                    $hz = [int][math]::Round($mode.VerticalRefreshRateNumerator / $mode.VerticalRefreshRateDenominator)
+                    if ($hz -gt $inv.RefreshMax) { $inv.RefreshMax = $hz }
+                }
+            }
+        }
+    } catch {}
+
+    # --- memory
+    $ram = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
+    $inv.RamSticks = $ram.Count
+    $inv.RamSpeed = if ($ram.Count) { [int]$ram[0].ConfiguredClockSpeed } else { 0 }
+    $inv.RamType = if ($ram.Count) { switch ([int]$ram[0].SMBIOSMemoryType) { 34 { 'DDR5' } 26 { 'DDR4' } 24 { 'DDR3' } default { '' } } } else { '' }
+
+    # --- network: is there a wired physical connection, or Wi-Fi only?
+    $phys = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
+    $inv.Wired = [bool](@($phys | Where-Object { "$($_.PhysicalMediaType) $($_.MediaType)" -match '802\.3' }).Count)
+    $inv.WifiOnly = (-not $inv.Wired) -and [bool](@($phys | Where-Object { "$($_.PhysicalMediaType)" -match '802\.11|Wireless' }).Count)
+
+    # --- Windows state
+    $inv.Build = [int](Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).BuildNumber
+    $inv.MemoryIntegrity = ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' -ErrorAction SilentlyContinue).Enabled -eq 1)
+    $inv.HyperV = [bool](Get-Service -Name 'vmms' -ErrorAction SilentlyContinue)
+    $inv.SystemFreePct = 100
+    try {
+        $d = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'" -ErrorAction Stop
+        if ($d.Size) { $inv.SystemFreePct = [int](100 * $d.FreeSpace / $d.Size) }
+    } catch {}
+
+    # --- installed programs, grouped
+    $apps = Get-WFInstalledApps
+    $appx = @(Get-AppxPackage -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    $soft = [ordered]@{}
+    foreach ($cat in $script:WFSoftwareCatalog.Keys) {
+        $hits = @($apps | Where-Object { $_ -match $script:WFSoftwareCatalog[$cat] })
+        if ($cat -eq 'Game launchers' -and ($appx -contains 'Microsoft.GamingApp')) { $hits += 'Xbox app' }
+        if ($cat -eq 'Anti-cheat') {
+            foreach ($s in @(Get-Service -Name 'vgk', 'vgc', 'EasyAntiCheat*', 'BEService*', 'FACEIT*' -ErrorAction SilentlyContinue)) { $hits += $s.DisplayName }
+        }
+        if ($cat -eq 'Virtualization') {
+            if ($inv.HyperV) { $hits += 'Hyper-V' }
+            if (Get-Service -Name 'LxssManager', 'WSLService' -ErrorAction SilentlyContinue) { $hits += 'WSL' }
+        }
+        # tidy names: drop '(x64)' / '(User)' tags and trailing version numbers ('LM Studio 0.4.21' -> 'LM Studio')
+        $soft[$cat] = @($hits | ForEach-Object { (($_ -replace '\s*\((x64|64-bit|32-bit|x86|64 bit|user|machine)\)', '') -replace '\s+v?\d+(\.\d+)+\S*$', '').Trim() } | Sort-Object -Unique)
+    }
+    $inv.Software = $soft
+    $inv.AppCount = $apps.Count
+    $inv.RemoteTools = @(Get-WFRemoteAccessTools)
+
+    # --- what starts with Windows
+    $start = @()
+    foreach ($k in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Run', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run')) {
+        $p = Get-ItemProperty -LiteralPath $k -ErrorAction SilentlyContinue
+        if ($p) { $start += @($p.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object { $_.Name }) }
+    }
+    $inv.StartupApps = @($start | Sort-Object -Unique)
+    return $inv
+}
+
+function Show-WFInventory {
+    $inv = $script:WFInv
+    if (-not $inv) { return }
+    if ($inv.RefreshNow) {
+        $disp = "$($inv.RefreshNow) Hz"
+        if ($inv.RefreshMax -ge $inv.RefreshNow + 10) { $disp += "  (monitor supports up to $($inv.RefreshMax) Hz)" }
+        Write-WFKeyValue 'Display' $disp $(if ($inv.RefreshMax -gt $inv.RefreshNow + 9) { 'Yellow' } else { 'White' })
+    }
+    Write-WFRaw ''
+    Write-WFRaw ("    Installed software ({0} programs scanned)" -f $inv.AppCount) 'DarkCyan'
+    $rows = [ordered]@{}
+    foreach ($cat in $inv.Software.Keys) { $rows[$cat] = @($inv.Software[$cat]) }
+    $rows['Remote access'] = @($inv.RemoteTools)
+    $any = $false
+    foreach ($cat in $rows.Keys) {
+        $list = @($rows[$cat])
+        if (-not $list.Count) { continue }
+        $any = $true
+        $txt = $list -join ', '
+        if ($txt.Length -gt 78) { $txt = $txt.Substring(0, 75) + '...' }
+        Write-WFRaw ('    {0,-18}: ' -f $cat) 'DarkGray' -NoNewLine
+        Write-WFRaw $txt 'White' -NoNewLine
+        Write-WFRaw '' -ScreenOnly
+        Write-WFRaw ('    {0,-18}: {1}' -f $cat, ($list -join ', ')) -LogOnly
+    }
+    if (-not $any) { Write-WFRaw '    (no games, streaming, RGB, creative or developer tools found)' 'DarkGray' }
+}
+
+function Add-WFRecommendation {
+    param([string]$Title, [string]$Detail)
+    Add-WFAction -Category 'Recommendation' -Type 'Tip' -Target 'This PC' -Action $Title -Status Info -Detail $Detail | Out-Null
+}
+
+function Add-WFRecommendations {
+    # Personal tips from the inventory - things this script does NOT change by itself.
+    param([string[]]$Profiles)
+    $inv = $script:WFInv
+    if (-not $inv) { return }
+    $perf = [bool](@($Profiles | Where-Object { $_ -in @('1', '3', '4', '10', '11') }).Count)
+    $wasQuiet = $script:WF.Quiet; $script:WF.Quiet = $true
+    try {
+        if ($perf -and $inv.RefreshNow -and $inv.RefreshMax -ge $inv.RefreshNow + 10) {
+            Add-WFRecommendation "Your monitor runs at $($inv.RefreshNow) Hz but supports $($inv.RefreshMax) Hz" 'Settings > System > Display > Advanced display > Choose a refresh rate. Smoother games for free.'
+        }
+        if ($perf -and -not $script:IsLaptop -and $inv.RamSpeed -gt 0 -and (($inv.RamType -eq 'DDR5' -and $inv.RamSpeed -le 4800) -or ($inv.RamType -eq 'DDR4' -and $inv.RamSpeed -le 2666))) {
+            Add-WFRecommendation "Memory runs at $($inv.RamSpeed) MHz ($($inv.RamType)) - XMP/EXPO is probably off" 'Turn on XMP (Intel) or EXPO (AMD) in the BIOS so the RAM runs at its rated speed.'
+        }
+        if ($perf -and -not $script:IsLaptop -and $inv.RamSticks -eq 1) {
+            Add-WFRecommendation 'Only one memory stick - the RAM runs in single-channel mode' 'A second identical stick (dual-channel) gives a clear FPS gain in CPU-heavy games.'
+        }
+        foreach ($g in @($inv.Gpus | Where-Object { $_.Discrete -and $_.DriverAgeDays -gt 180 })) {
+            $how = switch ($g.Vendor) { 'NVIDIA' { 'Update it with the NVIDIA app.' } 'AMD' { 'Update it with AMD Software: Adrenalin Edition.' } default { 'Update it from the manufacturer website.' } }
+            Add-WFRecommendation ("Graphics driver is about {0} months old ({1})" -f [math]::Round($g.DriverAgeDays / 30), $g.Name) $how
+        }
+        if ($perf -and $inv.WifiOnly) {
+            Add-WFRecommendation 'You are connected over Wi-Fi' 'A network cable gives lower and steadier ping in online games.'
+        }
+        $launch = @($inv.StartupApps | Where-Object { $_ -match '(?i)steam|discord|epic|battle|origin|eadesktop|ea app|ubisoft|riot|spotify|teams|onedrive|overwolf|wallpaper|icue|synapse|armoury|lghub|razer|msi|steelseries|nzxt' })
+        if ($launch.Count -ge 3) {
+            Add-WFRecommendation "$($launch.Count) apps start with Windows ($($launch -join ', '))" 'Turn off the ones you do not need right away: Task Manager > Startup apps. Faster boot, more free RAM.'
+        }
+        if ($inv.SystemFreePct -lt 10) {
+            Add-WFRecommendation "Only $($inv.SystemFreePct)% free on $env:SystemDrive" 'Run profile 12 (Deep System Cleanup) and move big files to another drive - Windows slows down when the system drive is nearly full.'
+        }
+        if ($perf -and @($inv.Software['Anti-cheat']).Count) {
+            Add-WFRecommendation ("Anti-cheat detected: " + (@($inv.Software['Anti-cheat']) -join ', ')) 'No drivers, kernel or security settings were changed, so your games stay compatible. Keep Memory Integrity on - some anti-cheats require it.'
+        } elseif ($perf -and $inv.MemoryIntegrity) {
+            Add-WFRecommendation 'Memory Integrity (Core isolation) is on' 'It blocks malicious drivers and may cost a few percent FPS in some games. This script leaves it on; changing it is your choice in Windows Security > Device security.'
+        }
+    } finally { $script:WF.Quiet = $wasQuiet }
 }
 
 function Invoke-ForensicDeepScan {
@@ -2222,7 +2422,14 @@ function Invoke-ProfileGaming {
     Remove-WFBcd -Name "disabledynamictick" -Desc "Keep dynamic tick (CPU can sleep when idle - less heat)" -Category "Boot / Latency"
 
     # Hardware-Accelerated GPU Scheduling (HAGS)
-    Set-WFReg -Path "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -Value 2 -Type DWord -Desc "Enable Hardware-Accelerated GPU Scheduling" -Category "GPU"
+    # Adaptive: HAGS only helps a discrete GPU on Windows 10 2004+ (build 19041).
+    if ($script:WFInv -and -not $script:WFInv.HasDiscreteGpu) {
+        Add-WFAction -Category 'GPU' -Type 'Registry' -Target 'Hardware-Accelerated GPU Scheduling' -Action 'Enable HAGS' -Status Skipped -Detail 'Only integrated graphics found - HAGS brings no benefit here, so it was left as is.' | Out-Null
+    } elseif ($script:WFInv -and $script:WFInv.Build -gt 0 -and $script:WFInv.Build -lt 19041) {
+        Add-WFAction -Category 'GPU' -Type 'Registry' -Target 'Hardware-Accelerated GPU Scheduling' -Action 'Enable HAGS' -Status Skipped -Detail 'Needs Windows 10 version 2004 or newer.' | Out-Null
+    } else {
+        Set-WFReg -Path "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -Value 2 -Type DWord -Desc "Enable Hardware-Accelerated GPU Scheduling" -Category "GPU"
+    }
 
     # Raw 1:1 Mouse Input
     Set-WFReg -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "0" -Type String -Desc "Disable Mouse Acceleration" -Category "Input"
@@ -3071,6 +3278,8 @@ function Start-WFOptimization {
                 default { Write-WFRaw "[!] Unknown profile '$p' - skipped." 'Yellow' }
             }
         }
+        # Personal recommendations from the system scan (shown in the summary and the report)
+        if (-not $isUndoOnly) { Add-WFRecommendations -Profiles $SelectedProfiles }
     } catch {
         Write-WFRaw "[X] Run stopped by an error: $($_.Exception.Message)" 'Red'
         Add-WFAction -Category 'Run' -Type 'System' -Target 'Script' -Action 'Run stopped by an unexpected error' -Status Failed -Detail $_.Exception.Message | Out-Null
@@ -3100,6 +3309,14 @@ function Start-WFOptimization {
     if ($script:WF.LogFile) { Write-WFKeyValue 'Log' $script:WF.LogFile 'DarkGray' }
     if (-not $DryRun -and $nChanged -gt 0) { Write-WFKeyValue 'Undo' 'run the script again and choose 6' 'DarkGray' }
     if ($nFailed) { Write-WFRaw '    Failed items are listed in red in the report (filter: Failed).' 'Yellow' }
+    $tips = @($all | Where-Object { $_.Category -eq 'Recommendation' })
+    if ($tips.Count) {
+        Write-WFBanner 'Recommendations for this PC' 'Yellow'
+        foreach ($tip in $tips) {
+            Write-WFRaw ('    * ' + $tip.Action) 'White'
+            Write-WFRaw ('      ' + $tip.Detail) 'DarkGray'
+        }
+    }
     Write-WFRaw ''
 
     $interactive = -not $Silent -and -not $Worker
